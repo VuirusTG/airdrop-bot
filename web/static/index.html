@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#08110d">
+  <title>Alpha Radar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard" aria-label="Alpha Radar home">
+        <span class="brand-mark">A</span><span>Alpha<span>Radar</span></span>
+      </a>
+      <nav class="nav" aria-label="Main navigation">
+        <a href="#dashboard" data-route="dashboard" class="active"><span class="nav-icon">◈</span> Dashboard <em id="pending-count">0</em></a>
+        <a href="#archive" data-route="archive"><span class="nav-icon">◷</span> Archive <em id="archive-count">0</em></a>
+        <a href="#health" data-route="health"><span class="nav-icon">♡</span> Healthcheck</a>
+        <a href="#settings" data-route="settings"><span class="nav-icon">⚙</span> Settings</a>
+      </nav>
+      <div class="side-bottom">
+        <div class="plan-card"><span>FREE PLAN</span><strong>12 of 25 posts</strong><div><i style="width:48%"></i></div><a href="#settings">Upgrade plan →</a></div>
+        <div class="profile"><div class="avatar">VN</div><div><strong>Vlad Ninja</strong><small>Workspace owner</small></div><button aria-label="Profile menu">···</button></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobile-menu" aria-label="Open menu">☰</button>
+        <div class="breadcrumb">Workspace <span>/</span> <strong id="crumb">Dashboard</strong></div>
+        <div class="top-actions"><button class="icon-button" title="Notifications">○</button><button class="primary small" id="scan-button">+ Scan sources</button></div>
+      </header>
+      <div id="app" class="content" aria-live="polite"></div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
