@@ -6,10 +6,17 @@ from contextlib import asynccontextmanager
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
+
+def _connect_args() -> dict:
+    """Use TLS for Neon/asyncpg without passing libpq-only URL parameters."""
+    if settings.DATABASE_URL.startswith("postgresql+asyncpg://"):
+        return {"ssl": "require"}
+    return {}
+
 from config import settings
 from db.models import Base
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
+engine = create_async_engine(settings.DATABASE_URL, echo=False, connect_args=_connect_args())
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

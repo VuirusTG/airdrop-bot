@@ -2,6 +2,7 @@
 Central configuration, loaded from environment variables (.env file).
 """
 import os
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,6 +29,24 @@ def _int(name: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def _database_url() -> str:
+    """Normalize libpq/Neon PostgreSQL URLs for SQLAlchemy asyncpg."""
+    url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./airdrop_bot.db").strip()
+    if not url.startswith(("postgresql://", "postgres://", "postgresql+asyncpg://")):
+        return url
+
+    if url.startswith("postgresql://"):
+        url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+    elif url.startswith("postgres://"):
+        url = "postgresql+asyncpg://" + url[len("postgres://"):]
+
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.pop("sslmode", None)
+    query.pop("channel_binding", None)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _list(name: str, default: str = "") -> list[str]:
@@ -74,7 +93,7 @@ class Settings:
     ENABLE_PROJECT_LINK_DISCOVERY: bool = _bool("ENABLE_PROJECT_LINK_DISCOVERY", True)
 
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./airdrop_bot.db")
+    DATABASE_URL: str = _database_url()
     WEBHOOK_BASE_URL: str = os.getenv("WEBHOOK_BASE_URL", "").strip().rstrip("/")
     TELEGRAM_WEBHOOK_SECRET: str = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
 
