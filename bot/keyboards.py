@@ -3,9 +3,30 @@ from urllib.parse import quote
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def review_keyboard(project_id: int) -> InlineKeyboardMarkup:
+def review_keyboard(
+    project_id: int,
+    previous_id: int | None = None,
+    next_id: int | None = None,
+    position: int | None = None,
+    total: int | None = None,
+) -> InlineKeyboardMarkup:
+    counter = f"📋 {position}/{total}" if position and total else "📋 Review queue"
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="◀️ Previous",
+                    callback_data=f"review_prev:{project_id}",
+                ),
+                InlineKeyboardButton(
+                    text=counter,
+                    callback_data=f"review_info:{project_id}",
+                ),
+                InlineKeyboardButton(
+                    text="Next ▶️",
+                    callback_data=f"review_next:{project_id}",
+                ),
+            ],
             [
                 InlineKeyboardButton(text="✅ Approve", callback_data=f"approve:{project_id}"),
                 InlineKeyboardButton(text="🔁 Rework", callback_data=f"rework:{project_id}"),

@@ -22,7 +22,7 @@ from services.cloudflare_image import generate_image as generate_cloudflare_imag
 logger = logging.getLogger(__name__)
 WIDTH = 1200
 HEIGHT = 675
-CARD_STYLE_VERSION = "ninja-editorial-v3"
+CARD_STYLE_VERSION = "ninja-editorial-v4"
 URL_RE = re.compile(r"https?://[^\s)\]}>,]+", re.IGNORECASE)
 HEADLINE_WORDS = re.compile(
     r"\b(?:airdrop|claim|opens?|launch(?:es|ed)?|tomorrow|today|live|alert|reward|campaign)\b",
@@ -284,92 +284,88 @@ def _render(
 ) -> None:
     background, ink, accent, panel = PALETTES.get(category, PALETTES["waitlist"])
     canvas = Image.new("RGBA", (WIDTH, HEIGHT), (*background, 255))
-    draw = ImageDraw.Draw(canvas)
 
-    art_region = (535, 0, WIDTH, HEIGHT)
+    # Full-bleed visual first. Official project artwork is preferred; AI art is only
+    # used when no usable official image was found. Keep the visual crisp instead of
+    # blurring it into an indistinct background.
     if official_image:
         try:
             source = Image.open(BytesIO(official_image)).convert("RGB")
-            fitted = ImageOps.fit(source, (art_region[2] - art_region[0], HEIGHT))
-            fitted = ImageEnhance.Color(fitted).enhance(1.12)
-            fitted = ImageEnhance.Contrast(fitted).enhance(1.08)
-            fitted = fitted.filter(ImageFilter.GaussianBlur(1.4))
-            canvas.paste(fitted, (art_region[0], 0))
-            tint = Image.new("RGBA", (art_region[2] - art_region[0], HEIGHT), (*ink, 42))
-            canvas.alpha_composite(tint, (art_region[0], 0))
+            fitted = ImageOps.fit(source, (WIDTH, HEIGHT), method=Image.Resampling.LANCZOS)
+            fitted = ImageEnhance.Color(fitted).enhance(1.05)
+            fitted = ImageEnhance.Contrast(fitted).enhance(1.04)
+            canvas.paste(fitted, (0, 0))
         except Exception:
-            _draw_fallback_art(draw, art_region, accent, ink, name)
-    else:
-        _draw_fallback_art(draw, art_region, accent, ink, name)
+            official_image = None
 
-    draw.polygon(((0, 0), (650, 0), (535, HEIGHT), (0, HEIGHT)), fill=background)
-    draw.rectangle((0, 0, 18, HEIGHT), fill=accent)
-    draw.line((535, HEIGHT, 650, 0), fill=accent, width=5)
-    draw.text((62, 42), "NINJA SCOUT  /  OPPORTUNITY", fill=accent, font=_font(20, bold=True))
+    if not official_image:
+        # Clean deterministic fallback: dark gradient + branded mascot, rather than
+        # random low-quality shapes or fake project imagery.
+        for x in range(WIDTH):
+            ratio = x / max(WIDTH - 1, 1)
+            r = int(background[0] * (1 - ratio) + panel[0] * ratio)
+            g = int(background[1] * (1 - ratio) + panel[1] * ratio)
+            b = int(background[2] * (1 - ratio) + panel[2] * ratio)
+            ImageDraw.Draw(canvas).line((x, 0, x, HEIGHT), fill=(r, g, b, 255))
+        _paste_mascot(canvas, settings.SOCIAL_CARD_MASCOT_PATH, accent)
+
+    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    # Strong left-to-right readability gradient.
+    for x in range(760):
+        alpha = int(215 * (1 - x / 760))
+        overlay_draw.line((x, 0, x, HEIGHT), fill=(8, 10, 14, alpha))
+    overlay_draw.rectangle((0, 0, 760, HEIGHT), fill=(8, 10, 14, 82))
+    canvas.alpha_composite(overlay)
+    draw = ImageDraw.Draw(canvas)
+
+    draw.rectangle((0, 0, 12, HEIGHT), fill=accent)
+    draw.text((52, 38), "NINJA SCOUT  •  OPPORTUNITY", fill=(245, 245, 245), font=_font(18, bold=True))
+
     ecosystem = _ascii_display(chain or "ECOSYSTEM TBD").upper()
-    ecosystem_font = _fit_font(draw, ecosystem, 170, 18, 14)
-    draw.rectangle((930, 24, 1142, 62), fill=panel)
-    draw.text((1036, 43), ecosystem, fill=ink, font=ecosystem_font, anchor="mm")
+    ecosystem_font = _fit_font(draw, ecosystem, 190, 18, 14)
+    badge_x = WIDTH - 230
+    draw.rounded_rectangle((badge_x, 28, WIDTH - 28, 68), radius=20, fill=(8, 10, 14, 205))
+    draw.text(((badge_x + WIDTH - 28) // 2, 48), ecosystem, fill=(245, 245, 245), font=ecosystem_font, anchor="mm")
 
     display_name = _project_label(name, project_url)
-    name_font = _fit_font(draw, display_name, 465, 96, 50, display=True)
-    name_lines = _wrap(draw, display_name, name_font, 465, 2)
-    y = 86
+    name_font = _fit_font(draw, display_name, 650, 94, 46, display=True)
+    name_lines = _wrap(draw, display_name, name_font, 650, 2)
+    y = 112
     for line in name_lines:
-        draw.text((67, y + 4), line, fill=accent, font=name_font)
-        draw.text((62, y), line, fill=ink, font=name_font)
-        y += int(name_font.size * 0.92)
+        draw.text((55, y + 4), line, fill=(0, 0, 0, 160), font=name_font)
+        draw.text((51, y), line, fill=(250, 250, 250), font=name_font)
+        y += int(name_font.size * 0.9)
 
-    category_label = category.upper() if category else "OPPORTUNITY"
-    badge_font = _display_font(25)
-    badge_width = draw.textbbox((0, 0), category_label, font=badge_font)[2] + 36
-    badge_y = y + 12
-    draw.polygon(
-        (
-            (62, badge_y),
-            (62 + badge_width, badge_y),
-            (52 + badge_width, badge_y + 43),
-            (62, badge_y + 43),
-        ),
-        fill=accent,
-    )
-    draw.text((80, badge_y + 7), category_label, fill=background, font=badge_font)
+    category_label = (category or "opportunity").upper()
+    badge_font = _font(19, bold=True)
+    badge_width = draw.textbbox((0, 0), category_label, font=badge_font)[2] + 32
+    badge_y = min(y + 12, 330)
+    draw.rounded_rectangle((54, badge_y, 54 + badge_width, badge_y + 38), radius=18, fill=accent)
+    draw.text((70, badge_y + 8), category_label, fill=(10, 12, 16), font=badge_font)
 
-    step_y = badge_y + 82
-    step_font = _font(18, bold=True)
-    number_font = _display_font(24)
+    # Three short verified-looking actions; never let long AI text take over the card.
+    step_y = badge_y + 64
+    step_font = _font(17, bold=True)
     for index, step in enumerate(_steps(instructions), start=1):
-        node_y = step_y + (index - 1) * 76
-        draw.line((84, node_y - 18, 84, node_y), fill=accent, width=3)
-        draw.rectangle((62, node_y, 505, node_y + 61), fill=panel)
-        draw.rectangle((62, node_y, 108, node_y + 61), fill=accent)
-        draw.text((85, node_y + 30), f"0{index}", fill=background, font=number_font, anchor="mm")
-        lines = _wrap(draw, step, step_font, 370, 2)
-        for line_index, line in enumerate(lines):
-            draw.text((122, node_y + 8 + line_index * 22), line, fill=ink, font=step_font)
+        if index > 3:
+            break
+        node_y = step_y + (index - 1) * 58
+        draw.rounded_rectangle((54, node_y, 690, node_y + 47), radius=10, fill=(8, 10, 14, 190))
+        draw.rounded_rectangle((54, node_y, 101, node_y + 47), radius=10, fill=accent)
+        draw.text((77, node_y + 23), f"{index:02d}", fill=(8, 10, 14), font=_font(16, bold=True), anchor="mm")
+        lines = _wrap(draw, step, step_font, 560, 1)
+        if lines:
+            draw.text((120, node_y + 12), lines[0], fill=(248, 248, 248), font=step_font)
 
-    draw.rectangle((62, 612, 520, 644), fill=panel)
-    draw.text(
-        (78, 619),
-        "REWARDS UNCONFIRMED  /  VERIFY OFFICIAL LINKS",
-        fill=accent,
-        font=_font(14, bold=True),
-    )
+    draw.rounded_rectangle((54, 590, 690, 635), radius=10, fill=(8, 10, 14, 185))
+    draw.text((74, 603), "REWARDS UNCONFIRMED  •  VERIFY OFFICIAL LINKS", fill=accent, font=_font(13, bold=True))
 
-    mascot_visible = _paste_mascot(canvas, settings.SOCIAL_CARD_MASCOT_PATH, accent)
-    draw = ImageDraw.Draw(canvas)
-    if not mascot_visible:
-        draw.text((895, 330), "NINJA SCOUT", fill=accent, font=_display_font(54), anchor="mm")
-    draw.rectangle((720, 617, WIDTH, HEIGHT), fill=accent)
-    draw.text(
-        (960, 646),
-        "CHECK  /  VERIFY  /  PARTICIPATE",
-        fill=background,
-        font=_font(18, bold=True),
-        anchor="mm",
-    )
+    draw.rounded_rectangle((WIDTH - 430, HEIGHT - 58, WIDTH - 24, HEIGHT - 20), radius=18, fill=accent)
+    draw.text((WIDTH - 227, HEIGHT - 39), "CHECK  •  VERIFY  •  PARTICIPATE", fill=(8, 10, 14), font=_font(15, bold=True), anchor="mm")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.convert("RGB").save(output_path, format="JPEG", quality=93, optimize=True)
+    canvas.convert("RGB").save(output_path, format="JPEG", quality=95, optimize=True, progressive=True)
 
 
 async def generate_social_card(
@@ -384,7 +380,9 @@ async def generate_social_card(
 ) -> SocialCard | None:
     if not settings.ENABLE_SOCIAL_CARD_GENERATION:
         return None
-    use_cloudflare = cloudflare_configured() and bool(image_prompt)
+    # Official project artwork is the default. AI artwork is a fallback for projects
+    # without a usable official image; explicit regeneration can still create new art.
+    use_cloudflare = cloudflare_configured() and bool(image_prompt) and not official_image_url
     fingerprint_source = (
         f"{name}|{category}|{chain}|{instructions}|{official_image_url}|{image_prompt}|{project_url}|"
         f"{generation_key or 'initial'}|"
@@ -398,14 +396,16 @@ async def generate_social_card(
 
     artwork = None
     source = "generated_social_card"
-    if use_cloudflare:
+    if official_image_url:
+        artwork = await _download_image(official_image_url)
+        if artwork is not None:
+            source = "social_card_official_image"
+    if artwork is None and use_cloudflare:
         try:
             artwork = await generate_cloudflare_image(_background_brief(category, image_prompt))
             source = "generated_social_card_cloudflare"
         except Exception as exc:
-            logger.warning("Cloudflare artwork failed for %s; using free local fallback: %s", name, exc)
-    if artwork is None:
-        artwork = await _download_image(official_image_url)
+            logger.warning("Cloudflare artwork failed for %s; using deterministic local card: %s", name, exc)
     try:
         await asyncio.to_thread(
             _render,

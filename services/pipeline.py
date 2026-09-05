@@ -220,33 +220,68 @@ async def process_raw_signal(
         session.add(project)
         await session.flush()
 
-        if draft.image_path:
-            try:
-                await bot.send_photo(
+        # Keep one Telegram review card for the whole pending queue.
+        # New candidates are added to the DB and become available through Previous/Next;
+        # they no longer generate a separate message each time the scanner finds a signal.
+        pending_result = await session.execute(
+            select(Project.id, Project.review_message_id)
+            .where(Project.status == ProjectStatus.PENDING_REVIEW)
+            .order_by(Project.id)
+        )
+        pending_rows = list(pending_result.all())
+        has_review_anchor = any(row.review_message_id for row in pending_rows if row.id != project.id)
+
+        if not has_review_anchor:
+            queue_result = await session.execute(
+                select(Project)
+                .options(selectinload(Project.drafts))
+                .where(Project.status == ProjectStatus.PENDING_REVIEW)
+                .order_by(Project.id)
+            )
+            queue = list(queue_result.scalars().all())
+            position = next((index + 1 for index, item in enumerate(queue) if item.id == project.id), 1)
+            total = max(len(queue), 1)
+            previous_id = queue[position - 2].id if position > 1 else None
+            next_id = queue[position].id if position < total else None
+            caption = _review_caption(project, draft, position, total)
+            keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+
+            if draft.image_path:
+                message = await bot.send_photo(
                     chat_id=settings.ADMIN_USER_ID,
                     photo=telegram_photo(draft.image_path),
-                    caption=f"Рекомендуемое изображение для {project.name}",
+                    caption=caption,
+                    reply_markup=keyboard,
                 )
-            except Exception as exc:
-                logger.warning("Could not attach candidate image for %s: %s", project.name, exc)
+            else:
+                message = await bot.send_message(
+                    chat_id=settings.ADMIN_USER_ID,
+                    text=caption,
+                    reply_markup=keyboard,
+                )
+            project.review_chat_id = message.chat.id
+            project.review_message_id = message.message_id
 
-        message = await bot.send_message(
-            chat_id=settings.ADMIN_USER_ID,
-            text=_review_text(project, draft),
-            reply_markup=review_keyboard(project.id),
-        )
-        project.review_chat_id = message.chat.id
-        project.review_message_id = message.message_id
         await session.commit()
         return PipelineResult("review", project, provider)
 
 
-def _review_text(project: Project, draft: Draft) -> str:
-    confidence_note = "сомнительный кандидат — проверьте источник" if project.legitimacy_score < 6 else "кандидат прошел фильтр"
-    header = (
-        f"Новый кандидат: {project.legitimacy_score:.1f}/10\n"
-        f"Статус: {confidence_note}\n"
-        f"Почему: {project.score_reasoning}\n\n"
-    )
-    text = header + draft.rendered_review_text()
-    return text if len(text) <= 4096 else text[:4090] + "\n..."
+def _review_caption(project: Project, draft: Draft, position: int, total: int) -> str:
+    score = f"{project.legitimacy_score:.1f}/10" if project.legitimacy_score is not None else "n/a"
+    lines = [
+        f"🔎 REVIEW {position}/{total}  •  #{project.id}  •  {score}",
+        f"🚀 {draft.title}",
+        "",
+        draft.summary.strip(),
+        "",
+        "📝 What to do:",
+        draft.instructions.strip(),
+    ]
+    if draft.potential_reward:
+        lines += ["", f"💰 {draft.potential_reward.strip()}"]
+    if draft.risk_note:
+        lines += ["", f"⚠️ {draft.risk_note.strip()}"]
+    if draft.project_url:
+        lines += ["", f"🔗 {draft.project_url}"]
+    text = "\n".join(lines).strip()
+    return text if len(text) <= 1024 else text[:1019].rsplit(" ", 1)[0] + "…"
