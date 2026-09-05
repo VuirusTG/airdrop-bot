@@ -23,3 +23,14 @@ The scanner is one-shot: it connects to Neon, scans sources, processes candidate
 
 ## Important
 Render Free can spin down after inactivity. This architecture accepts that because the bot uses Telegram webhooks rather than polling, while the scanner is independent. Mutable state is stored in Neon, not on Render's filesystem.
+
+
+## Final deployment checklist
+
+1. Do not commit `.env`, `airdrop_bot.db`, `__pycache__`, or generated local files.
+2. Render must have `DATABASE_URL` set to the Neon connection string. The app normalizes `postgresql://` to `postgresql+asyncpg://` and handles Neon `sslmode`/`channel_binding` parameters.
+3. `WEBHOOK_BASE_URL` must be the exact public Render URL, without a trailing slash.
+4. `TELEGRAM_WEBHOOK_SECRET` is a secret chosen by you; it is not obtained from Telegram.
+5. GitHub Actions needs the runtime/API secrets separately because GitHub cannot read Render environment variables.
+6. After deployment, open `/healthz`. A healthy response must show `status: ok` and `database: postgresql`.
+7. The scheduled scanner runs independently in GitHub Actions; Render does not need an always-on worker.

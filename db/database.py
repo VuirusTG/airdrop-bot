@@ -4,7 +4,9 @@ Async engine + session factory. Call init_db() once on startup.
 from contextlib import asynccontextmanager
 
 from sqlalchemy import inspect, text
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from config import settings
 
 
 def _connect_args() -> dict:
@@ -12,8 +14,6 @@ def _connect_args() -> dict:
     if settings.DATABASE_URL.startswith("postgresql+asyncpg://"):
         return {"ssl": "require"}
     return {}
-
-from config import settings
 from db.models import Base
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False, connect_args=_connect_args())
@@ -47,8 +47,10 @@ async def _ensure_optional_columns(conn) -> None:
 
 
 async def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
-    bind = conn.sync_connection
-    existing = {column["name"] for column in inspect(bind).get_columns(table)}
+    def get_existing_columns(sync_conn):
+        return {column["name"] for column in inspect(sync_conn).get_columns(table)}
+
+    existing = await conn.run_sync(get_existing_columns)
     for name, sql_type in columns.items():
         if name not in existing:
             await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))

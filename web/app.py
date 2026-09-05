@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, text
 from sqlalchemy.orm import selectinload
 
 from config import settings
@@ -141,7 +141,19 @@ async def _load_project(project_id: int) -> Project:
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok", "service": "airdrop-bot", "mode": "webhook" if settings.WEBHOOK_BASE_URL else "local"}
+    # Render uses this endpoint for service health. Keep it cheap, but verify
+    # the actual configured database instead of returning a static 200.
+    try:
+        async with get_session() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(503, f"Database unavailable: {exc}") from exc
+    return {
+        "status": "ok",
+        "service": "airdrop-bot",
+        "mode": "webhook" if settings.WEBHOOK_BASE_URL else "local",
+        "database": "postgresql" if settings.DATABASE_URL.startswith("postgresql+") else "sqlite",
+    }
 
 
 @app.post("/telegram/webhook")
@@ -389,8 +401,13 @@ async def save_settings(payload: SettingsRequest):
 @app.get("/api/health")
 async def health(live: bool = Query(False)):
     if not live:
+        database_name = (
+            "PostgreSQL/Neon"
+            if settings.DATABASE_URL.startswith("postgresql+")
+            else "SQLite"
+        )
         items = [
-            {"name": "Database", "working": True, "detail": "SQLite connected"},
+            {"name": "Database", "working": True, "detail": f"{database_name} configured"},
             {"name": "Groq", "working": bool(settings.GROQ_API_KEY), "detail": "Configured" if settings.GROQ_API_KEY else "Local fallback enabled"},
             {"name": "Gemini", "working": bool(settings.GEMINI_API_KEY), "detail": "Configured" if settings.GEMINI_API_KEY else "Optional"},
             {"name": "Telegram", "working": bool(settings.BOT_TOKEN), "detail": "Bot token configured"},
