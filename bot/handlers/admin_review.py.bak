@@ -174,7 +174,6 @@ async def on_regenerate_image(callback: CallbackQuery):
             image_prompt=regeneration_prompt,
             project_url=project.project_url,
             generation_key=f"project-{project.id}-v{new_version}",
-            potential_reward=previous_draft.potential_reward,
         )
         if not social_card:
             if callback.message:
@@ -284,7 +283,6 @@ async def on_feedback_reply(message: Message):
                 image_prompt=new_result.image_prompt,
                 project_url=project.project_url,
                 generation_key=f"project-{project.id}-v{previous_draft.version + 1}",
-                potential_reward=new_result.potential_reward,
             )
         new_draft = Draft(
             project_id=project.id,

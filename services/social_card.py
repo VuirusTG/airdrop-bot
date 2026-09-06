@@ -1,4 +1,4 @@
-"""Render branded 16:9 social cards for Telegram and X."""
+"""Generate consistent Ninja Scout 16:9 review/publishing cards."""
 from __future__ import annotations
 
 import asyncio
@@ -18,62 +18,37 @@ from config import settings
 from services.cloudflare_image import configured as cloudflare_configured
 from services.cloudflare_image import generate_image as generate_cloudflare_image
 
-
 logger = logging.getLogger(__name__)
-WIDTH = 1200
-HEIGHT = 675
-CARD_STYLE_VERSION = "ninja-editorial-v4"
+WIDTH = 1536
+HEIGHT = 864
+CARD_STYLE_VERSION = "ninja-scout-cyber-v4"
 URL_RE = re.compile(r"https?://[^\s)\]}>,]+", re.IGNORECASE)
 HEADLINE_WORDS = re.compile(
     r"\b(?:airdrop|claim|opens?|launch(?:es|ed)?|tomorrow|today|live|alert|reward|campaign)\b",
     re.IGNORECASE,
 )
 SCENE_BRIEFS = {
-    "airdrop": "a luminous gateway opening above a deep futuristic canyon, energy particles and flowing data ribbons",
-    "testnet": "a futuristic systems laboratory with interconnected light pathways, modular architecture and visible depth",
-    "quest": "a bold digital expedition route through a geometric landscape with illuminated checkpoints",
-    "points": "ascending pathways of light through abstract architecture with clear forward motion and layered milestones",
-    "waitlist": "a sealed luminous gateway inside minimal futuristic architecture, anticipation and discovery",
+    "airdrop": "a glowing futuristic gateway, swirling energy and a mysterious project emblem in a dark cyber environment",
+    "testnet": "a futuristic technology laboratory, luminous network pathways, modular architecture and a mysterious energy core",
+    "quest": "a dangerous digital expedition through futuristic ruins with glowing checkpoints and a mysterious energy portal",
+    "points": "ascending futuristic architecture, luminous pathways and layered milestones leading toward a powerful energy source",
+    "waitlist": "a sealed luminous gateway in a dark futuristic facility, anticipation, discovery and controlled neon energy",
 }
 COLOR_WORDS = (
-    "red",
-    "cyan",
-    "teal",
-    "blue",
-    "green",
-    "lime",
-    "yellow",
-    "orange",
-    "magenta",
-    "violet",
-    "white",
-    "black",
-    "silver",
-    "gold",
+    "red", "cyan", "teal", "blue", "green", "lime", "yellow", "orange", "magenta", "violet", "white", "black", "silver", "gold",
 )
 ENVIRONMENT_CUES = (
-    "city",
-    "canyon",
-    "forest",
-    "desert",
-    "space",
-    "temple",
-    "laboratory",
-    "gateway",
-    "network",
-    "landscape",
-    "architecture",
-    "ocean",
-    "mountains",
+    "city", "canyon", "forest", "desert", "space", "temple", "laboratory", "gateway", "network", "landscape", "architecture", "ocean", "mountains",
 )
 
-PALETTES = {
-    "airdrop": ((245, 241, 232), (22, 24, 24), (220, 55, 46), (255, 255, 255)),
-    "testnet": ((17, 20, 25), (244, 246, 248), (48, 201, 176), (30, 35, 43)),
-    "quest": ((225, 247, 70), (18, 25, 31), (235, 62, 52), (245, 247, 239)),
-    "points": ((48, 13, 23), (255, 244, 238), (255, 111, 57), (82, 26, 39)),
-    "waitlist": ((239, 243, 250), (17, 25, 39), (54, 105, 214), (255, 255, 255)),
-}
+# The reference style is intentionally consistent across categories.
+BG = (5, 10, 10)
+INK = (244, 246, 242)
+MUTED = (165, 174, 166)
+ACCENT = (181, 244, 20)
+ACCENT_DARK = (79, 112, 10)
+PANEL = (12, 19, 18)
+PANEL_2 = (20, 29, 27)
 
 FONT_BOLD = (
     "C:/Windows/Fonts/arialbd.ttf",
@@ -111,14 +86,7 @@ def _display_font(size: int):
     return _font(size, bold=True)
 
 
-def _fit_font(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    max_width: int,
-    start: int,
-    minimum: int,
-    display: bool = False,
-):
+def _fit_font(draw: ImageDraw.ImageDraw, text: str, max_width: int, start: int, minimum: int, display: bool = False):
     for size in range(start, minimum - 1, -2):
         font = _display_font(size) if display else _font(size, bold=True)
         if draw.textbbox((0, 0), text, font=font)[2] <= max_width:
@@ -142,9 +110,7 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_width: int, max_lines:
             break
     if current and len(lines) < max_lines:
         lines.append(current)
-    if len(lines) == max_lines:
-        lines[-1] = lines[-1].rstrip(".,;:")
-    return lines
+    return lines[:max_lines]
 
 
 def _ascii_display(text: str) -> str:
@@ -155,11 +121,7 @@ def _ascii_display(text: str) -> str:
 
 def _project_label(name: str, project_url: str | None = None) -> str:
     clean_name = _ascii_display(URL_RE.sub("", name)).lstrip("$")
-    looks_like_headline = (
-        len(clean_name) > 34
-        or len(clean_name.split()) > 4
-        or bool(HEADLINE_WORDS.search(clean_name))
-    )
+    looks_like_headline = len(clean_name) > 34 or len(clean_name.split()) > 4 or bool(HEADLINE_WORDS.search(clean_name))
     if project_url and looks_like_headline:
         host = urlparse(project_url).hostname or ""
         labels = [label for label in host.lower().split(".") if label and label != "www"]
@@ -183,19 +145,6 @@ def _clean_step(step: str) -> str:
     return cleaned
 
 
-def _background_brief(category: str, image_prompt: str | None) -> str:
-    scene = SCENE_BRIEFS.get(category, "an abstract futuristic gateway with layered light and architectural depth")
-    prompt_lower = (image_prompt or "").lower()
-    colors = [color for color in COLOR_WORDS if re.search(rf"\b{color}\b", prompt_lower)][:2]
-    cues = [cue for cue in ENVIRONMENT_CUES if re.search(rf"\b{cue}\b", prompt_lower)][:2]
-    palette = f" Palette accents: {', '.join(colors)}." if colors else ""
-    environment = f" Additional environment cues: {', '.join(cues)}." if cues else ""
-    return (
-        f"Science-fiction editorial environment: {scene}. Dynamic cinematic perspective, premium poster lighting, "
-        f"clean focal area for a foreground character.{palette}{environment} Natural and abstract forms only."
-    )
-
-
 def _steps(instructions: str, limit: int = 3) -> list[str]:
     raw_steps = [part.strip() for part in re.split(r"\n+|(?=\d+\.\s)", instructions or "")]
     cleaned: list[str] = []
@@ -205,18 +154,36 @@ def _steps(instructions: str, limit: int = 3) -> list[str]:
             cleaned.append(step)
         if len(cleaned) == limit:
             break
-    return cleaned or ["Review the official page", "Verify campaign requirements"]
+    return cleaned or ["Open the official project page", "Complete the required tasks", "Join the official community"]
+
+
+def _background_brief(category: str, image_prompt: str | None, name: str, chain: str | None) -> str:
+    scene = SCENE_BRIEFS.get(category, "an abstract futuristic gateway with layered light and architectural depth")
+    prompt_lower = (image_prompt or "").lower()
+    colors = [color for color in COLOR_WORDS if re.search(rf"\b{color}\b", prompt_lower)][:2]
+    cues = [cue for cue in ENVIRONMENT_CUES if re.search(rf"\b{cue}\b", prompt_lower)][:2]
+    details = []
+    if colors:
+        details.append(f"secondary accents: {', '.join(colors)}")
+    if cues:
+        details.append(f"environment cues: {', '.join(cues)}")
+    if chain:
+        details.append(f"ecosystem mood inspired by {chain}")
+    extra = ". " + ". ".join(details) if details else ""
+    return (
+        f"Project {name}. Category: {category}. {scene}. {extra} "
+        "Make the visual feel like a premium AAA cyberpunk game poster: black and charcoal base, neon lime-green lighting, "
+        "masked cyber ninja on the RIGHT, black tactical outfit, subtle glowing accents, cinematic smoke, holographic grid, "
+        "strong rim light, reflective ground, futuristic portal or abstract geometric project energy behind the character. "
+        "Keep the LEFT side dark and relatively empty for application-rendered typography."
+    )
 
 
 async def _download_image(url: str | None) -> bytes | None:
     if not url or not url.startswith(("https://", "http://")):
         return None
     try:
-        async with httpx.AsyncClient(
-            timeout=15.0,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 AirdropAlphaBot/1.0"},
-        ) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 AirdropAlphaBot/1.0"}) as client:
             response = await client.get(url)
             response.raise_for_status()
         if len(response.content) > 8 * 1024 * 1024:
@@ -227,50 +194,18 @@ async def _download_image(url: str | None) -> bytes | None:
         return None
 
 
-def _draw_fallback_art(
-    draw: ImageDraw.ImageDraw,
-    box: tuple[int, int, int, int],
-    accent,
-    ink,
-    name: str,
-) -> None:
-    left, top, right, bottom = box
-    center_x = (left + right) // 2
-    center_y = (top + bottom) // 2
-    for radius, width in ((185, 4), (135, 3), (85, 2)):
-        draw.ellipse(
-            (center_x - radius, center_y - radius, center_x + radius, center_y + radius),
-            outline=accent,
-            width=width,
-        )
-    initials = "".join(word[0] for word in name.split()[:2]).upper() or "?"
-    font = _fit_font(draw, initials, 150, 92, 48, display=True)
-    draw.text((center_x, center_y), initials, fill=ink, font=font, anchor="mm")
+def _prepare_artwork(artwork: bytes, box: tuple[int, int, int, int]) -> Image.Image:
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    source = Image.open(BytesIO(artwork)).convert("RGB")
+    fitted = ImageOps.fit(source, (width, height), method=Image.Resampling.LANCZOS, centering=(0.62, 0.5))
+    fitted = ImageEnhance.Color(fitted).enhance(1.18)
+    fitted = ImageEnhance.Contrast(fitted).enhance(1.10)
+    return fitted
 
 
-def _paste_mascot(canvas: Image.Image, mascot_path: str, accent) -> bool:
-    path = Path(mascot_path).resolve()
-    if not path.is_file():
-        logger.warning("Social card mascot is missing: %s", path)
-        return False
-    try:
-        mascot = Image.open(path).convert("RGBA")
-        mascot.thumbnail((435, 625), Image.Resampling.LANCZOS)
-        x = WIDTH - mascot.width - 18
-        y = HEIGHT - mascot.height + 8
-
-        alpha = mascot.getchannel("A")
-        glow_alpha = alpha.filter(ImageFilter.GaussianBlur(10)).point(
-            lambda value: value * 110 // 255
-        )
-        glow_color = Image.new("RGBA", mascot.size, (*accent, 0))
-        glow_color.putalpha(glow_alpha)
-        canvas.alpha_composite(glow_color, (x, y))
-        canvas.alpha_composite(mascot, (x, y))
-        return True
-    except Exception as exc:
-        logger.warning("Could not compose ninja mascot: %s", exc)
-        return False
+def _rounded_panel(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], fill=PANEL, outline=ACCENT, width=2, radius=20):
+    draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
 
 
 def _render(
@@ -279,93 +214,133 @@ def _render(
     category: str,
     chain: str | None,
     instructions: str,
-    official_image: bytes | None,
+    potential_reward: str | None,
+    artwork: bytes | None,
     project_url: str | None,
+    generated_artwork: bool,
 ) -> None:
-    background, ink, accent, panel = PALETTES.get(category, PALETTES["waitlist"])
-    canvas = Image.new("RGBA", (WIDTH, HEIGHT), (*background, 255))
+    canvas = Image.new("RGB", (WIDTH, HEIGHT), BG)
 
-    # Full-bleed visual first. Official project artwork is preferred; AI art is only
-    # used when no usable official image was found. Keep the visual crisp instead of
-    # blurring it into an indistinct background.
-    if official_image:
+    # Full-bleed generated art, with a deliberate dark left zone for readable UI.
+    if artwork:
         try:
-            source = Image.open(BytesIO(official_image)).convert("RGB")
-            fitted = ImageOps.fit(source, (WIDTH, HEIGHT), method=Image.Resampling.LANCZOS)
-            fitted = ImageEnhance.Color(fitted).enhance(1.05)
-            fitted = ImageEnhance.Contrast(fitted).enhance(1.04)
-            canvas.paste(fitted, (0, 0))
+            art = _prepare_artwork(artwork, (0, 0, WIDTH, HEIGHT))
+            canvas.paste(art, (0, 0))
         except Exception:
-            official_image = None
+            artwork = None
 
-    if not official_image:
-        # Clean deterministic fallback: dark gradient + branded mascot, rather than
-        # random low-quality shapes or fake project imagery.
-        for x in range(WIDTH):
-            ratio = x / max(WIDTH - 1, 1)
-            r = int(background[0] * (1 - ratio) + panel[0] * ratio)
-            g = int(background[1] * (1 - ratio) + panel[1] * ratio)
-            b = int(background[2] * (1 - ratio) + panel[2] * ratio)
-            ImageDraw.Draw(canvas).line((x, 0, x, HEIGHT), fill=(r, g, b, 255))
-        _paste_mascot(canvas, settings.SOCIAL_CARD_MASCOT_PATH, accent)
+    if not artwork:
+        draw = ImageDraw.Draw(canvas)
+        for x in range(790, WIDTH, 80):
+            draw.line((x, 0, x - 180, HEIGHT), fill=(15, 55, 30), width=2)
+        for y in range(80, HEIGHT, 80):
+            draw.line((790, y, WIDTH, y), fill=(12, 46, 28), width=2)
 
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
-    overlay_draw = ImageDraw.Draw(overlay)
-    # Strong left-to-right readability gradient.
-    for x in range(760):
-        alpha = int(215 * (1 - x / 760))
-        overlay_draw.line((x, 0, x, HEIGHT), fill=(8, 10, 14, alpha))
-    overlay_draw.rectangle((0, 0, 760, HEIGHT), fill=(8, 10, 14, 82))
-    canvas.alpha_composite(overlay)
+    od = ImageDraw.Draw(overlay)
+    # Heavy black gradient on the left, but preserve the right-side character/art.
+    for x in range(0, 900):
+        alpha = int(220 * (1 - x / 980) ** 0.55)
+        od.line((x, 0, x, HEIGHT), fill=(0, 5, 5, max(0, alpha)), width=1)
+    od.rectangle((0, 0, 620, HEIGHT), fill=(0, 5, 5, 92))
+    canvas = Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(canvas)
 
-    draw.rectangle((0, 0, 12, HEIGHT), fill=accent)
-    draw.text((52, 38), "NINJA SCOUT  •  OPPORTUNITY", fill=(245, 245, 245), font=_font(18, bold=True))
+    # Accent edge and diagonal separator.
+    draw.rectangle((0, 0, 10, HEIGHT), fill=ACCENT)
+    draw.line((720, HEIGHT, 860, 0), fill=ACCENT, width=5)
 
-    ecosystem = _ascii_display(chain or "ECOSYSTEM TBD").upper()
-    ecosystem_font = _fit_font(draw, ecosystem, 190, 18, 14)
-    badge_x = WIDTH - 230
-    draw.rounded_rectangle((badge_x, 28, WIDTH - 28, 68), radius=20, fill=(8, 10, 14, 205))
-    draw.text(((badge_x + WIDTH - 28) // 2, 48), ecosystem, fill=(245, 245, 245), font=ecosystem_font, anchor="mm")
+    # Header.
+    draw.text((44, 30), "NINJA SCOUT", fill=ACCENT, font=_font(22, bold=True))
+    draw.text((206, 30), " /  OPPORTUNITY", fill=INK, font=_font(22, bold=True))
 
+    ecosystem = _ascii_display(chain or "ECOSYSTEM").upper()
+    draw.rounded_rectangle((1188, 26, 1488, 72), radius=6, fill=(28, 10, 18))
+    eco_font = _fit_font(draw, ecosystem, 260, 20, 14)
+    draw.text((1338, 49), ecosystem, fill=INK, font=eco_font, anchor="mm")
+
+    # Project name — intentionally large like the reference.
     display_name = _project_label(name, project_url)
-    name_font = _fit_font(draw, display_name, 650, 94, 46, display=True)
-    name_lines = _wrap(draw, display_name, name_font, 650, 2)
-    y = 112
+    name_font = _fit_font(draw, display_name, 635, 126, 54, display=True)
+    name_lines = _wrap(draw, display_name, name_font, 635, 2)
+    y = 88
     for line in name_lines:
-        draw.text((55, y + 4), line, fill=(0, 0, 0, 160), font=name_font)
-        draw.text((51, y), line, fill=(250, 250, 250), font=name_font)
-        y += int(name_font.size * 0.9)
+        # Small shadow/offset gives the distressed poster feel without requiring an external font.
+        draw.text((43, y + 5), line, fill=(20, 35, 20), font=name_font)
+        draw.text((38, y), line, fill=INK, font=name_font)
+        y += int(name_font.size * 0.91)
 
-    category_label = (category or "opportunity").upper()
-    badge_font = _font(19, bold=True)
-    badge_width = draw.textbbox((0, 0), category_label, font=badge_font)[2] + 32
-    badge_y = min(y + 12, 330)
-    draw.rounded_rectangle((54, badge_y, 54 + badge_width, badge_y + 38), radius=18, fill=accent)
-    draw.text((70, badge_y + 8), category_label, fill=(10, 12, 16), font=badge_font)
+    category_label = (category or "OPPORTUNITY").upper()
+    badge_font = _display_font(28)
+    badge_width = min(300, draw.textbbox((0, 0), category_label, font=badge_font)[2] + 50)
+    draw.polygon(((40, y + 10), (40 + badge_width, y + 10), (29 + badge_width, y + 68), (40, y + 68)), fill=ACCENT)
+    draw.text((62, y + 19), category_label, fill=(4, 9, 8), font=badge_font)
+    draw.text((330, y + 23), "DON'T MISS EARLY REWARDS", fill=INK, font=_font(24, bold=True))
 
-    # Three short verified-looking actions; never let long AI text take over the card.
-    step_y = badge_y + 64
-    step_font = _font(17, bold=True)
+    # Tasks panel.
+    panel_top = y + 105
+    _rounded_panel(draw, (38, panel_top, 685, panel_top + 300), fill=(4, 12, 11), outline=ACCENT, width=2, radius=22)
+    draw.text((68, panel_top - 18), "✦  TASKS TO QUALIFY", fill=ACCENT, font=_font(27, bold=True))
+    step_font = _font(22, bold=True)
+    small_font = _font(19, bold=True)
     for index, step in enumerate(_steps(instructions), start=1):
-        if index > 3:
-            break
-        node_y = step_y + (index - 1) * 58
-        draw.rounded_rectangle((54, node_y, 690, node_y + 47), radius=10, fill=(8, 10, 14, 190))
-        draw.rounded_rectangle((54, node_y, 101, node_y + 47), radius=10, fill=accent)
-        draw.text((77, node_y + 23), f"{index:02d}", fill=(8, 10, 14), font=_font(16, bold=True), anchor="mm")
-        lines = _wrap(draw, step, step_font, 560, 1)
-        if lines:
-            draw.text((120, node_y + 12), lines[0], fill=(248, 248, 248), font=step_font)
+        row_y = panel_top + 45 + (index - 1) * 82
+        draw.rectangle((68, row_y, 138, row_y + 62), fill=ACCENT)
+        draw.text((103, row_y + 31), f"0{index}", fill=(4, 9, 8), font=_display_font(27), anchor="mm")
+        icon_x = 175
+        draw.ellipse((icon_x, row_y + 4, icon_x + 54, row_y + 58), outline=INK, width=3)
+        # Simple task glyphs.
+        if index == 1:
+            draw.ellipse((icon_x + 13, row_y + 17, icon_x + 41, row_y + 45), outline=INK, width=2)
+            draw.line((icon_x + 27, row_y + 6, icon_x + 27, row_y + 56), fill=INK, width=2)
+            draw.line((icon_x + 5, row_y + 31, icon_x + 49, row_y + 31), fill=INK, width=2)
+        elif index == 2:
+            draw.line((icon_x + 13, row_y + 31, icon_x + 24, row_y + 42), fill=INK, width=4)
+            draw.line((icon_x + 24, row_y + 42, icon_x + 44, row_y + 18), fill=INK, width=4)
+        else:
+            draw.polygon(((icon_x + 12, row_y + 18), (icon_x + 44, row_y + 29), (icon_x + 16, row_y + 46)), outline=INK, fill=None)
+        lines = _wrap(draw, step, step_font, 420, 2)
+        for line_index, line in enumerate(lines):
+            draw.text((250, row_y + 8 + line_index * 28), line, fill=INK if line_index == 0 else ACCENT, font=step_font)
 
-    draw.rounded_rectangle((54, 590, 690, 635), radius=10, fill=(8, 10, 14, 185))
-    draw.text((74, 603), "REWARDS UNCONFIRMED  •  VERIFY OFFICIAL LINKS", fill=accent, font=_font(13, bold=True))
+    # Reward / network panel. Never invent a numeric reward.
+    reward_top = panel_top + 322
+    _rounded_panel(draw, (38, reward_top, 685, reward_top + 116), fill=(5, 13, 12), outline=ACCENT, width=2, radius=20)
+    draw.text((68, reward_top + 22), "POTENTIAL REWARDS", fill=INK, font=_font(17, bold=True))
+    reward_text = _ascii_display(potential_reward or "UNCONFIRMED").upper()
+    reward_font = _fit_font(draw, reward_text, 275, 48, 22, display=True)
+    draw.text((68, reward_top + 52), reward_text, fill=ACCENT, font=reward_font)
+    draw.line((375, reward_top + 18, 375, reward_top + 98), fill=ACCENT_DARK, width=2)
+    draw.text((410, reward_top + 22), "NETWORK", fill=INK, font=_font(17, bold=True))
+    draw.text((410, reward_top + 54), _ascii_display(chain or "UNKNOWN").upper(), fill=ACCENT, font=_font(28, bold=True))
 
-    draw.rounded_rectangle((WIDTH - 430, HEIGHT - 58, WIDTH - 24, HEIGHT - 20), radius=18, fill=accent)
-    draw.text((WIDTH - 227, HEIGHT - 39), "CHECK  •  VERIFY  •  PARTICIPATE", fill=(8, 10, 14), font=_font(15, bold=True), anchor="mm")
+    # Footer.
+    draw.rectangle((38, 792, 685, 836), outline=ACCENT, width=2)
+    draw.text((60, 803), "INFO", fill=INK, font=_font(18, bold=True))
+    draw.ellipse((118, 816, 126, 824), fill=ACCENT)
+    draw.text((145, 803), "TASKS", fill=INK, font=_font(18, bold=True))
+    draw.ellipse((211, 816, 219, 824), fill=ACCENT)
+    draw.text((238, 803), "UPDATES", fill=INK, font=_font(18, bold=True))
+    draw.ellipse((325, 816, 333, 824), fill=ACCENT)
+    draw.text((350, 803), "VERIFY OFFICIAL LINKS", fill=ACCENT, font=_font(18, bold=True))
+
+    # Right-side callout.
+    callout = (1190, 755, 1495, 835)
+    draw.rounded_rectangle(callout, radius=18, fill=(5, 10, 9), outline=ACCENT, width=2)
+    draw.text((1216, 770), "EARLY USERS", fill=INK, font=_font(20, bold=True))
+    draw.text((1216, 798), "GET THE EDGE", fill=ACCENT, font=_font(20, bold=True))
+
+    # Keep the AI artwork untouched on the right; only add a subtle green grade.
+    if generated_artwork:
+        grade = Image.new("RGBA", (WIDTH, HEIGHT), (35, 120, 20, 18))
+        mask = Image.new("L", (WIDTH, HEIGHT), 0)
+        md = ImageDraw.Draw(mask)
+        md.rectangle((690, 0, WIDTH, HEIGHT), fill=120)
+        grade.putalpha(mask)
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), grade).convert("RGB")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.convert("RGB").save(output_path, format="JPEG", quality=95, optimize=True, progressive=True)
+    canvas.save(output_path, format="JPEG", quality=94, optimize=True)
 
 
 async def generate_social_card(
@@ -377,35 +352,41 @@ async def generate_social_card(
     image_prompt: str | None = None,
     project_url: str | None = None,
     generation_key: str | None = None,
+    potential_reward: str | None = None,
 ) -> SocialCard | None:
     if not settings.ENABLE_SOCIAL_CARD_GENERATION:
         return None
-    # Official project artwork is the default. AI artwork is a fallback for projects
-    # without a usable official image; explicit regeneration can still create new art.
-    use_cloudflare = cloudflare_configured() and bool(image_prompt) and not official_image_url
+
+    # Cloudflare artwork is the primary path. The local renderer is responsible for all text.
+    use_cloudflare = cloudflare_configured()
     fingerprint_source = (
         f"{name}|{category}|{chain}|{instructions}|{official_image_url}|{image_prompt}|{project_url}|"
-        f"{generation_key or 'initial'}|"
-        f"{settings.CLOUDFLARE_IMAGE_MODEL if use_cloudflare else 'local'}|"
-        f"{settings.SOCIAL_CARD_MASCOT_PATH}|{CARD_STYLE_VERSION}"
+        f"{generation_key or 'initial'}|{potential_reward}|"
+        f"{settings.CLOUDFLARE_IMAGE_MODEL if use_cloudflare else 'official/local'}|{CARD_STYLE_VERSION}"
     )
     fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:16]
     output_path = Path(settings.SOCIAL_CARD_DIRECTORY).resolve() / f"{fingerprint}.jpg"
-    if output_path.is_file() and not use_cloudflare:
-        return SocialCard(str(output_path))
+    if output_path.is_file():
+        return SocialCard(str(output_path), "generated_social_card_cached")
 
     artwork = None
     source = "generated_social_card"
-    if official_image_url:
-        artwork = await _download_image(official_image_url)
-        if artwork is not None:
-            source = "social_card_official_image"
-    if artwork is None and use_cloudflare:
+    generated_artwork = False
+
+    if use_cloudflare:
         try:
-            artwork = await generate_cloudflare_image(_background_brief(category, image_prompt))
+            artwork = await generate_cloudflare_image(
+                _background_brief(category, image_prompt, name, chain)
+            )
             source = "generated_social_card_cloudflare"
+            generated_artwork = True
         except Exception as exc:
-            logger.warning("Cloudflare artwork failed for %s; using deterministic local card: %s", name, exc)
+            logger.warning("Cloudflare artwork failed for %s; using official image/local fallback: %s", name, exc)
+
+    if artwork is None:
+        artwork = await _download_image(official_image_url)
+        source = "generated_social_card_official" if artwork else "generated_social_card_local"
+
     try:
         await asyncio.to_thread(
             _render,
@@ -414,8 +395,10 @@ async def generate_social_card(
             category,
             chain,
             instructions,
+            potential_reward,
             artwork,
             project_url,
+            generated_artwork,
         )
         return SocialCard(str(output_path), source)
     except Exception as exc:

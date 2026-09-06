@@ -1,4 +1,4 @@
-"""Optional Cloudflare Workers AI image generation with a free-tier-friendly model."""
+"""Cloudflare Workers AI image generation for Ninja Scout social cards."""
 from __future__ import annotations
 
 import base64
@@ -33,16 +33,28 @@ def _error_detail(payload: dict) -> str:
 
 
 async def generate_image(prompt: str) -> bytes:
+    """Generate the artwork layer used by the branded 16:9 card.
+
+    The model creates the cinematic right-side artwork (usually a cyber ninja)
+    while the application itself renders all readable typography and facts.
+    This prevents AI-generated text/logos from becoming distorted.
+    """
     if not configured():
         raise CloudflareImageError("Cloudflare API token или Account ID не настроен")
 
     safe_prompt = (
-        "Abstract cinematic environment for a premium technology editorial poster. "
-        f"Use only the environment, color, technology, and ecosystem motifs from this brief: {prompt[:1500]}. "
-        "Wide 16:9 composition, dramatic lighting, layered depth, bold color contrast, strongest detail on the right. "
-        "Environment only: no people, no characters, no ninjas, no faces, no silhouettes. "
-        "No coins, tokens, circular emblems, signs, banners, screens, billboards, product packaging, or branding. "
-        "Absolutely no readable text, letters, numbers, logos, fake interface, token price, or financial promises."
+        "Create a premium 16:9 cyberpunk crypto editorial artwork for a branded social-media card. "
+        "The final application will place readable typography and information panels over the LEFT side, "
+        "so keep the left 40 percent very dark, clean, low-detail and uncluttered. "
+        "The RIGHT side must contain the main visual: a stylish masked cyber-ninja / shinobi character, "
+        "dynamic three-quarter pose, black tactical clothing, subtle neon-lime accents, high-detail anime-realistic illustration, "
+        "cinematic rim lighting, dramatic fog, glowing futuristic gateway or abstract project energy, holographic grid, "
+        "deep blacks, neon green/lime highlights, premium game-poster quality, strong depth and sharp foreground subject. "
+        f"Project visual brief: {prompt[:1800]}. "
+        "Do not render any readable text, words, letters, numbers, captions, UI labels, watermarks, prices, "
+        "logos, brand names, fake interfaces, coins or token symbols. "
+        "A simple abstract geometric emblem in the environment is allowed, but it must not contain letters. "
+        "No extra people. No collage. No split-screen. No white border. Full-bleed 16:9 artwork."
     )
     endpoint = (
         f"{API_BASE}/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/ai/run/"
