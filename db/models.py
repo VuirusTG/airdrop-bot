@@ -107,8 +107,8 @@ class Draft(Base):
         if self.image_path:
             if self.image_source == "generated_social_card_cloudflare":
                 label = "AI social card (Cloudflare Workers AI + локальный макет)"
-            elif self.image_source == "generated_social_card":
-                label = "Бесплатно сгенерированная social card"
+            elif self.image_source in {"generated_social_card", "generated_social_card_local_ninja"}:
+                label = "Ninja Scout social card (локальный резерв)"
             else:
                 label = "Рекомендуемое изображение со страницы источника"
             parts.append(f"{label}: {self.image_path}")

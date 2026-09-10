@@ -194,6 +194,71 @@ async def _download_image(url: str | None) -> bytes | None:
         return None
 
 
+def _local_ninja_artwork() -> Image.Image | None:
+    """Build a deterministic branded artwork when Cloudflare is unavailable.
+
+    Never use an arbitrary project OG image as a full social-card background:
+    source pages commonly return logos, white screenshots or unrelated banners,
+    which breaks the visual identity of every regeneration.
+    """
+    mascot_path = Path(settings.SOCIAL_CARD_MASCOT_PATH)
+    if not mascot_path.is_absolute():
+        mascot_path = Path(__file__).resolve().parents[1] / mascot_path
+    if not mascot_path.is_file():
+        return None
+
+    bg = Image.new("RGBA", (WIDTH, HEIGHT), (4, 8, 8, 255))
+    px = bg.load()
+    for y in range(HEIGHT):
+        for x in range(WIDTH):
+            right = x / WIDTH
+            top = y / HEIGHT
+            glow = max(0.0, 1.0 - (((x - 1180) / 520) ** 2 + ((y - 390) / 430) ** 2))
+            px[x, y] = (
+                int(3 + 7 * right),
+                int(7 + 13 * glow),
+                int(7 + 8 * glow),
+                255,
+            )
+
+    d = ImageDraw.Draw(bg, "RGBA")
+    # Holographic perspective grid on the right.
+    for x in range(760, WIDTH + 1, 70):
+        d.line((x, 250, x - 210, HEIGHT), fill=(70, 180, 35, 45), width=2)
+    for y in range(280, HEIGHT, 58):
+        d.line((720, y, WIDTH, y + 20), fill=(80, 190, 40, 35), width=2)
+
+    # Large neon portal / energy ring.
+    center = (1180, 410)
+    for radius, alpha, width in ((350, 18, 22), (300, 30, 12), (255, 55, 7)):
+        d.ellipse(
+            (center[0] - radius, center[1] - radius, center[0] + radius, center[1] + radius),
+            outline=(170, 255, 20, alpha), width=width,
+        )
+    for r in range(205, 250, 5):
+        d.ellipse(
+            (center[0] - r, center[1] - r, center[0] + r, center[1] + r),
+            outline=(150, 255, 20, max(8, 45 - (r - 205))), width=2,
+        )
+
+    # Ground glow.
+    d.ellipse((760, 690, 1500, 930), fill=(80, 210, 20, 28))
+
+    mascot = Image.open(mascot_path).convert("RGBA")
+    target = (720, 790)
+    mascot.thumbnail(target, Image.Resampling.LANCZOS)
+    # Place the mascot on the right, preserving the left text-safe zone.
+    mx = 880 + (target[0] - mascot.width) // 2
+    my = HEIGHT - mascot.height - 12
+    bg.alpha_composite(mascot, (mx, my))
+
+    # Lime rim/glow over the character area.
+    glow = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow, "RGBA")
+    gd.ellipse((870, 40, 1510, 780), outline=(170, 255, 20, 18), width=18)
+    bg = Image.alpha_composite(bg, glow)
+    return bg.convert("RGB")
+
 def _prepare_artwork(artwork: bytes, box: tuple[int, int, int, int]) -> Image.Image:
     width = box[2] - box[0]
     height = box[3] - box[1]
@@ -255,7 +320,7 @@ def _render(
     draw.text((206, 30), " /  OPPORTUNITY", fill=INK, font=_font(22, bold=True))
 
     ecosystem = _ascii_display(chain or "ECOSYSTEM").upper()
-    draw.rounded_rectangle((1188, 26, 1488, 72), radius=6, fill=(28, 10, 18))
+    draw.rounded_rectangle((1188, 26, 1488, 72), radius=22, fill=(4, 8, 8), outline=ACCENT, width=2)
     eco_font = _fit_font(draw, ecosystem, 260, 20, 14)
     draw.text((1338, 49), ecosystem, fill=INK, font=eco_font, anchor="mm")
 
@@ -384,8 +449,18 @@ async def generate_social_card(
             logger.warning("Cloudflare artwork failed for %s; using official image/local fallback: %s", name, exc)
 
     if artwork is None:
-        artwork = await _download_image(official_image_url)
-        source = "generated_social_card_official" if artwork else "generated_social_card_local"
+        # Deterministic branded fallback. Do not place arbitrary OG images here:
+        # they are often logos/screenshots and were the cause of the broken gray
+        # / white regeneration shown by the previous version.
+        local_art = await asyncio.to_thread(_local_ninja_artwork)
+        if local_art is not None:
+            buffer = BytesIO()
+            local_art.save(buffer, format="PNG")
+            artwork = buffer.getvalue()
+            source = "generated_social_card_local_ninja"
+        else:
+            artwork = None
+            source = "generated_social_card_local"
 
     try:
         await asyncio.to_thread(

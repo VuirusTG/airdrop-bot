@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -38,6 +40,27 @@ STATIC = Path(__file__).resolve().parent / "static"
 webhook_bot = Bot(settings.BOT_TOKEN)
 dp = Dispatcher()
 dp.include_router(admin_review.router)
+
+# Telegram retries webhook deliveries when a request takes too long. A manual
+# scan can take minutes, so feed_update must not block the HTTP response. Keep a
+# short-lived update-id cache so the same Telegram update cannot run twice.
+_seen_update_ids: dict[int, float] = {}
+_UPDATE_DEDUP_TTL_SECONDS = 15 * 60
+_UPDATE_DEDUP_MAX = 2000
+
+
+def _remember_update(update_id: int) -> bool:
+    now = time.monotonic()
+    stale = [key for key, timestamp in _seen_update_ids.items() if now - timestamp > _UPDATE_DEDUP_TTL_SECONDS]
+    for key in stale:
+        _seen_update_ids.pop(key, None)
+    if update_id in _seen_update_ids:
+        return False
+    if len(_seen_update_ids) >= _UPDATE_DEDUP_MAX:
+        oldest = min(_seen_update_ids, key=_seen_update_ids.get)
+        _seen_update_ids.pop(oldest, None)
+    _seen_update_ids[update_id] = now
+    return True
 
 
 @asynccontextmanager
@@ -164,7 +187,13 @@ async def telegram_webhook(
     if settings.TELEGRAM_WEBHOOK_SECRET and secret != settings.TELEGRAM_WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
     parsed = Update.model_validate(update)
-    await dp.feed_update(webhook_bot, parsed)
+    if not _remember_update(parsed.update_id):
+        return {"ok": True, "duplicate": True}
+
+    # Acknowledge Telegram immediately. Long handlers (especially /scan_now)
+    # run in the background; otherwise Telegram retries the same update and
+    # the admin receives several identical messages.
+    asyncio.create_task(dp.feed_update(webhook_bot, parsed))
     return {"ok": True}
 
 

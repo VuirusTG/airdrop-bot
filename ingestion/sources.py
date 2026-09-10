@@ -18,6 +18,10 @@ from bs4 import BeautifulSoup
 
 from config import settings
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 ACTIONABLE_KEYWORDS = (
     "airdrop",
@@ -162,11 +166,12 @@ def _entry_links(entry) -> list[str]:
             links.append(normalized)
 
     summary = getattr(entry, "summary", "") or ""
-    soup = BeautifulSoup(summary, "html.parser")
-    for anchor in soup.find_all("a", href=True):
-        normalized = _normalize_external_url(anchor["href"])
-        if normalized:
-            links.append(normalized)
+    if isinstance(summary, str) and "<" in summary and ">" in summary:
+        soup = BeautifulSoup(summary, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            normalized = _normalize_external_url(anchor["href"])
+            if normalized:
+                links.append(normalized)
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -203,28 +208,76 @@ async def _fetch_text(url: str) -> str | None:
 
 
 async def _signals_from_feed(feed_url: str, source: str, limit: int = 20) -> list[RawSignal]:
+    """Collect broad candidates; the LLM is the authoritative opportunity filter.
+
+    The previous implementation required every RSS item to have a project-looking
+    URL/path. That discarded legitimate news/announcement articles before Groq or
+    Gemini could inspect them, which made the scanner report collected=0 even when
+    all feeds returned HTTP 200.
+    """
     try:
         payload = await _fetch_text(feed_url)
-    except Exception:
+    except Exception as exc:
+        # Keep the scanner alive if one free source is unavailable.
         return []
 
     feed = feedparser.parse(payload or "")
     signals: list[RawSignal] = []
+    source_is_opportunity_feed = source == "airdropalert" or source.startswith("trusted_x:")
+
     for entry in (getattr(feed, "entries", []) or [])[:limit]:
         title = _clean_text(getattr(entry, "title", "") or "")
-        summary = _clean_text(getattr(entry, "summary", "") or "")
-        link = getattr(entry, "link", None)
+        raw_content = getattr(entry, "content", "") or ""
+        if isinstance(raw_content, list):
+            raw_content = " ".join(
+                item.get("value", "") if isinstance(item, dict) else str(item)
+                for item in raw_content
+            )
+        summary = _clean_text(
+            getattr(entry, "summary", "")
+            or getattr(entry, "description", "")
+            or raw_content
+            or ""
+        )
+        link = _normalize_external_url(getattr(entry, "link", None))
         best_link = _best_project_link(entry, link)
-        combined = f"{title}\n\n{summary}\n\nLink: {best_link or link or feed_url}"
-        if not _looks_actionable(f"{title}\n{summary}", best_link or link):
+        combined_text = f"{title}\n\n{summary}".strip()
+        lowered = combined_text.lower()
+
+        # Opportunity-specific feeds are intentionally broad: they are already
+        # curated around airdrops/social opportunities, and the AI filter decides
+        # whether an item is actually actionable.
+        if not source_is_opportunity_feed:
+            has_action_keyword = any(
+                re.search(rf"(?<![a-z]){re.escape(keyword)}(?![a-z])", lowered)
+                for keyword in ACTIONABLE_KEYWORDS
+            )
+            has_current_marker = any(marker in lowered for marker in CURRENT_ACTION_MARKERS)
+            path_hint = any(
+                marker in (urlparse(link or "").path.lower())
+                for marker in ("airdrop", "testnet", "retrodrop", "quest", "campaign", "points", "claim")
+            )
+            if not (has_action_keyword or has_current_marker or path_hint):
+                continue
+
+            if any(keyword in lowered for keyword in EDITORIAL_KEYWORDS) and not has_current_marker:
+                continue
+
+        source_link = best_link or link or feed_url
+        raw_text = (
+            f"Title: {title}\n"
+            f"Summary: {summary}\n"
+            f"Source URL: {source_link}"
+        ).strip()
+        if not title and not summary:
             continue
 
         signals.append(
             RawSignal(
-                name=_stable_name(title, source),
-                raw_text=combined,
+                name=_stable_name(title or summary[:80], source),
+                raw_text=raw_text,
                 source=source,
-                source_url=best_link or link or feed_url,
+                source_url=source_link,
             )
         )
     return signals
@@ -233,7 +286,7 @@ async def _signals_from_feed(feed_url: str, source: str, limit: int = 20) -> lis
 async def collect_airdropalert() -> list[RawSignal]:
     if not settings.ENABLE_AIRDROPALERT_SOURCE:
         return []
-    return await _signals_from_feed(settings.AIRDROPALERT_FEED_URL, "airdropalert", limit=30)
+    return await _signals_from_feed(settings.AIRDROPALERT_FEED_URL, "airdropalert", limit=25)
 
 
 async def collect_rss_feeds() -> list[RawSignal]:
@@ -242,7 +295,7 @@ async def collect_rss_feeds() -> list[RawSignal]:
 
     signals: list[RawSignal] = []
     for feed_url in settings.RSS_FEEDS:
-        signals.extend(await _signals_from_feed(feed_url, "rss_feed", limit=20))
+        signals.extend(await _signals_from_feed(feed_url, "rss_feed", limit=15))
     return signals
 
 
@@ -254,7 +307,7 @@ async def collect_trusted_x() -> list[RawSignal]:
     for username in settings.TRUSTED_X_ACCOUNTS:
         for base_url in settings.FREE_X_RSS_BASE_URLS:
             feed_url = f"{base_url.rstrip('/')}/{username}/rss"
-            items = await _signals_from_feed(feed_url, f"trusted_x:{username}", limit=8)
+            items = await _signals_from_feed(feed_url, f"trusted_x:{username}", limit=5)
             if items:
                 signals.extend(items)
                 break
@@ -274,4 +327,9 @@ async def collect_all_signals() -> list[RawSignal]:
             continue
         seen.add(key)
         unique.append(signal)
+
+    counts: dict[str, int] = {}
+    for signal in unique:
+        counts[signal.source] = counts.get(signal.source, 0) + 1
+    logger.info("Collected %d candidate signals by source: %s", len(unique), counts)
     return unique

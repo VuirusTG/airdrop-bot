@@ -1,4 +1,5 @@
 """Background source scanning with detailed outcome statistics."""
+import asyncio
 import logging
 from datetime import datetime
 
@@ -18,6 +19,7 @@ class SourceScanScheduler:
     def __init__(self) -> None:
         self.scheduler = AsyncIOScheduler()
         self.bot: Bot | None = None
+        self._scan_lock = asyncio.Lock()
 
     def configure(self, bot: Bot) -> None:
         self.bot = bot
@@ -50,6 +52,19 @@ class SourceScanScheduler:
             self.scheduler.shutdown(wait=False)
 
     async def scan_once(self) -> dict[str, int]:
+        # Prevent manual and scheduled invocations from processing the same
+        # source set concurrently.
+        if self._scan_lock.locked():
+            logger.info("Source scan skipped because another scan is already running")
+            return {
+                "collected": 0, "sent_for_review": 0, "filtered": 0,
+                "duplicates": 0, "groq": 0, "fallback": 0, "errors": 0,
+                "skipped": 1,
+            }
+        async with self._scan_lock:
+            return await self._scan_once_locked()
+
+    async def _scan_once_locked(self) -> dict[str, int]:
         summary = {
             "collected": 0,
             "sent_for_review": 0,

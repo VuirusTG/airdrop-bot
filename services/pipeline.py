@@ -221,25 +221,54 @@ async def process_raw_signal(
         session.add(project)
         await session.flush()
 
+        # One candidate = one Telegram review message. This is important for
+        # webhook delivery and makes Previous/Next edit a single stable message.
         if draft.image_path:
             try:
-                await bot.send_photo(
+                message = await bot.send_photo(
                     chat_id=settings.ADMIN_USER_ID,
                     photo=telegram_photo(draft.image_path),
-                    caption=f"Рекомендуемое изображение для {project.name}",
+                    caption=_review_caption(project, draft),
+                    reply_markup=review_keyboard(project.id),
                 )
             except Exception as exc:
                 logger.warning("Could not attach candidate image for %s: %s", project.name, exc)
-
-        message = await bot.send_message(
-            chat_id=settings.ADMIN_USER_ID,
-            text=_review_text(project, draft),
-            reply_markup=review_keyboard(project.id),
-        )
+                message = await bot.send_message(
+                    chat_id=settings.ADMIN_USER_ID,
+                    text=_review_text(project, draft),
+                    reply_markup=review_keyboard(project.id),
+                )
+        else:
+            message = await bot.send_message(
+                chat_id=settings.ADMIN_USER_ID,
+                text=_review_text(project, draft),
+                reply_markup=review_keyboard(project.id),
+            )
         project.review_chat_id = message.chat.id
         project.review_message_id = message.message_id
         await session.commit()
         return PipelineResult("review", project, provider)
+
+
+def _review_caption(project: Project, draft: Draft) -> str:
+    score = f"{project.legitimacy_score:.1f}/10" if project.legitimacy_score is not None else "n/a"
+    lines = [
+        f"🔎 REVIEW • #{project.id} • {score}",
+        f"🚀 {draft.title}",
+        "",
+        draft.summary.strip(),
+        "",
+        "📝 What to do:",
+        draft.instructions.strip(),
+    ]
+    if draft.potential_reward:
+        lines += ["", f"💰 {draft.potential_reward.strip()}"]
+    if draft.risk_note:
+        lines += ["", f"⚠️ {draft.risk_note.strip()}"]
+    if draft.project_url:
+        lines += ["", f"🔗 {draft.project_url}"]
+    text = "\n".join(lines).strip()
+    return text if len(text) <= 1024 else text[:1019].rsplit(" ", 1)[0] + "…"
 
 
 def _review_text(project: Project, draft: Draft) -> str:

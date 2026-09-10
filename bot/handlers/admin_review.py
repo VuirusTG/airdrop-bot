@@ -1,7 +1,9 @@
 """Admin review commands and callback handlers."""
+import asyncio
+
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InputMediaPhoto, Message
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -20,8 +22,13 @@ from services.project_link import discover_project_link
 from services.social_card import generate_social_card
 from services.health import collect_system_health
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = Router()
 awaiting_feedback: dict[int, bool] = {}
+_manual_scan_task: asyncio.Task | None = None
 
 
 def _is_admin_message(message: Message) -> bool:
@@ -39,6 +46,229 @@ async def _load_project(session, project_id: int) -> Project | None:
     return result.scalar_one_or_none()
 
 
+async def _review_queue(session) -> list[Project]:
+    result = await session.execute(
+        select(Project)
+        .options(selectinload(Project.drafts))
+        .where(Project.status == ProjectStatus.PENDING_REVIEW)
+        .order_by(Project.id)
+    )
+    return list(result.scalars().all())
+
+
+def _queue_meta(queue: list[Project], project_id: int) -> tuple[int, int, int | None, int | None]:
+    ids = [project.id for project in queue]
+    try:
+        index = ids.index(project_id)
+    except ValueError:
+        return 1, max(len(queue), 1), None, None
+    previous_id = ids[index - 1] if index > 0 else None
+    next_id = ids[index + 1] if index + 1 < len(ids) else None
+    return index + 1, len(ids), previous_id, next_id
+
+
+def _review_caption(project: Project, draft: Draft, position: int, total: int) -> str:
+    score = f"{project.legitimacy_score:.1f}/10" if project.legitimacy_score is not None else "n/a"
+    lines = [
+        f"🔎 REVIEW {position}/{total}  •  #{project.id}  •  {score}",
+        f"🚀 {draft.title}",
+        "",
+        draft.summary.strip(),
+        "",
+        "📝 What to do:",
+        draft.instructions.strip(),
+    ]
+    if draft.potential_reward:
+        lines += ["", f"💰 {draft.potential_reward.strip()}"]
+    if draft.risk_note:
+        lines += ["", f"⚠️ {draft.risk_note.strip()}"]
+    if draft.project_url:
+        lines += ["", f"🔗 {draft.project_url}"]
+    text = "\n".join(lines).strip()
+    return text if len(text) <= 1024 else text[:1019].rsplit(" ", 1)[0] + "…"
+
+
+async def _replace_review_message(callback: CallbackQuery, project_id: int) -> None:
+    """Keep one stable review card, including media/text type changes."""
+    if not callback.message:
+        return
+    async with get_session() as session:
+        queue = await _review_queue(session)
+        project = next((item for item in queue if item.id == project_id), None)
+        if not project or not project.latest_draft():
+            return
+        draft = project.latest_draft()
+        position, total, previous_id, next_id = _queue_meta(queue, project.id)
+        keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+
+        current_has_photo = bool(callback.message.photo)
+        desired_has_photo = bool(draft.image_path)
+
+        if desired_has_photo and current_has_photo:
+            await callback.message.edit_media(
+                media=InputMediaPhoto(
+                    media=telegram_photo(draft.image_path),
+                    caption=_review_caption(project, draft, position, total),
+                ),
+                reply_markup=keyboard,
+            )
+            sent = callback.message
+        elif not desired_has_photo and not current_has_photo:
+            await callback.message.edit_text(
+                _review_caption(project, draft, position, total),
+                reply_markup=keyboard,
+            )
+            sent = callback.message
+        else:
+            # Telegram cannot convert a text message into a photo (or vice versa)
+            # with edit_media/edit_text. Replace it atomically from the admin's
+            # perspective and remove the obsolete message.
+            if desired_has_photo:
+                sent = await callback.bot.send_photo(
+                    chat_id=callback.message.chat.id,
+                    photo=telegram_photo(draft.image_path),
+                    caption=_review_caption(project, draft, position, total),
+                    reply_markup=keyboard,
+                )
+            else:
+                sent = await callback.bot.send_message(
+                    chat_id=callback.message.chat.id,
+                    text=_review_caption(project, draft, position, total),
+                    reply_markup=keyboard,
+                )
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+
+        project.review_chat_id = sent.chat.id
+        project.review_message_id = sent.message_id
+        await session.commit()
+
+
+async def _show_review_project(callback: CallbackQuery, project_id: int) -> bool:
+    """Replace the current review card with another pending project."""
+    if not callback.message:
+        return False
+    async with get_session() as session:
+        queue = await _review_queue(session)
+        project = next((item for item in queue if item.id == project_id), None)
+        if not project or not project.latest_draft():
+            return False
+    try:
+        await _replace_review_message(callback, project_id)
+    except Exception:
+        return False
+    return True
+
+
+async def _open_review_queue(message: Message) -> None:
+    async with get_session() as session:
+        queue = await _review_queue(session)
+        if not queue:
+            await message.answer("📭 Очередь черновиков пуста.")
+            return
+        project = queue[0]
+        draft = project.latest_draft()
+        if not draft:
+            await message.answer("В очереди найден проект без черновика.")
+            return
+        position, total, previous_id, next_id = _queue_meta(queue, project.id)
+        keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+        caption = _review_caption(project, draft, position, total)
+        if draft.image_path:
+            sent = await message.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=telegram_photo(draft.image_path),
+                caption=caption,
+                reply_markup=keyboard,
+            )
+        else:
+            sent = await message.answer(caption, reply_markup=keyboard)
+        project.review_chat_id = message.chat.id
+        project.review_message_id = sent.message_id
+        await session.commit()
+
+
+@router.message(Command("review"))
+async def on_review(message: Message):
+    if not _is_admin_message(message):
+        return
+    await _open_review_queue(message)
+
+
+@router.callback_query(F.data.startswith("review_info:"))
+async def on_review_info(callback: CallbackQuery):
+    if not _is_admin_callback(callback):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    async with get_session() as session:
+        queue = await _review_queue(session)
+        project_id = int(callback.data.split(":")[1])
+        position, total, _, _ = _queue_meta(queue, project_id)
+    await callback.answer(f"Черновик {position} из {total} в очереди.")
+
+
+@router.callback_query(F.data.startswith("review_prev:"))
+async def on_review_prev(callback: CallbackQuery):
+    if not _is_admin_callback(callback):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    current_id = int(callback.data.split(":")[1])
+    async with get_session() as session:
+        queue = await _review_queue(session)
+        position, _, previous_id, _ = _queue_meta(queue, current_id)
+    if not previous_id:
+        await callback.answer("Это первый черновик.")
+        return
+    if await _show_review_project(callback, previous_id):
+        await callback.answer()
+    else:
+        await callback.answer("Черновик больше недоступен.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("review_next:"))
+async def on_review_next(callback: CallbackQuery):
+    if not _is_admin_callback(callback):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    current_id = int(callback.data.split(":")[1])
+    async with get_session() as session:
+        queue = await _review_queue(session)
+        _, _, _, next_id = _queue_meta(queue, current_id)
+    if not next_id:
+        await callback.answer("Это последний черновик.")
+        return
+    if await _show_review_project(callback, next_id):
+        await callback.answer()
+    else:
+        await callback.answer("Черновик больше недоступен.", show_alert=True)
+
+
+async def _show_next_or_empty(callback: CallbackQuery, excluded_id: int) -> None:
+    if not callback.message:
+        return
+    async with get_session() as session:
+        queue = [project for project in await _review_queue(session) if project.id != excluded_id]
+        project = queue[0] if queue else None
+        draft = project.latest_draft() if project else None
+
+    if project and draft:
+        try:
+            await _replace_review_message(callback, project.id)
+        except Exception:
+            await callback.message.answer("Не удалось открыть следующий черновик. Используйте /review.")
+        return
+
+    try:
+        if callback.message.photo:
+            await callback.message.edit_caption(caption="📭 Очередь черновиков пуста.", reply_markup=None)
+        else:
+            await callback.message.edit_text("📭 Очередь черновиков пуста.", reply_markup=None)
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data.startswith("approve:"))
 async def on_approve(callback: CallbackQuery):
     if not _is_admin_callback(callback):
@@ -46,6 +276,7 @@ async def on_approve(callback: CallbackQuery):
         return
 
     project_id = int(callback.data.split(":")[1])
+    telegram_success = False
     async with get_session() as session:
         project = await _load_project(session, project_id)
         if not project or not project.latest_draft():
@@ -68,13 +299,11 @@ async def on_approve(callback: CallbackQuery):
         await session.commit()
         results = await publish_project(callback.bot, project, project.latest_draft())
         telegram_result = next(result for result in results if result.platform == "telegram")
-        project.status = (
-            ProjectStatus.PUBLISHED if telegram_result.success else ProjectStatus.APPROVED
-        )
+        telegram_success = telegram_result.success
+        project.status = ProjectStatus.PUBLISHED if telegram_success else ProjectStatus.APPROVED
         await session.commit()
 
-        if callback.message:
-            await callback.message.edit_reply_markup(reply_markup=None)
+        if not telegram_success and callback.message:
             lines = ["Результат публикации:"]
             for result in results:
                 marker = "✅" if result.success else "❌"
@@ -86,26 +315,10 @@ async def on_approve(callback: CallbackQuery):
                 if not x_result.success and project.latest_draft().twitter_text
                 else None
             )
-            result_text = "\n".join(lines)
-            fallback_image = project.latest_draft().image_path
-            if fallback_keyboard and fallback_image:
-                try:
-                    await callback.bot.send_photo(
-                        chat_id=callback.message.chat.id,
-                        photo=telegram_photo(fallback_image),
-                        caption=(
-                            result_text
-                            + "\n\nФото для ручной публикации в X. Откройте X кнопкой ниже, "
-                            "затем прикрепите это изображение."
-                        )[:1024],
-                        reply_markup=fallback_keyboard,
-                    )
-                except Exception:
-                    await callback.message.answer(result_text, reply_markup=fallback_keyboard)
-            else:
-                await callback.message.answer(result_text, reply_markup=fallback_keyboard)
+            await callback.message.answer("\n".join(lines), reply_markup=fallback_keyboard)
 
-    if telegram_result.success:
+    if telegram_success:
+        await _show_next_or_empty(callback, project_id)
         await callback.answer("Опубликовано в Telegram.")
     else:
         await callback.answer("Telegram не опубликовал пост. Смотрите ошибку ниже.", show_alert=True)
@@ -124,9 +337,7 @@ async def on_delete(callback: CallbackQuery):
             return
         project.status = ProjectStatus.DELETED
         await session.commit()
-        if callback.message:
-            await callback.message.edit_reply_markup(reply_markup=None)
-            await callback.message.answer(f"Проект #{project.id} удален и архивирован.")
+    await _show_next_or_empty(callback, project_id)
     await callback.answer("Удалено.")
 
 
@@ -202,29 +413,19 @@ async def on_regenerate_image(callback: CallbackQuery):
         )
         project.drafts.append(new_draft)
         await session.commit()
-
         if callback.message:
-            provider = (
-                "Cloudflare Workers AI"
-                if social_card.source == "generated_social_card_cloudflare"
-                else "локальный резервный генератор"
-            )
-            await callback.bot.send_photo(
-                chat_id=callback.message.chat.id,
-                photo=telegram_photo(new_draft.image_path),
-                caption=f"Новая картинка для версии {new_version}, источник: {provider}",
-            )
-            await callback.message.answer(
-                f"Создана версия {new_version}. Текст сохранён без изменений.",
-                reply_markup=review_keyboard(project.id),
-            )
+            try:
+                await _replace_review_message(callback, project.id)
+            except Exception as exc:
+                logger.exception("Could not replace review card after image regeneration: %s", exc)
+                await callback.message.answer("Изображение создано, но карточку не удалось обновить. Используйте /review.")
 
 
 @router.message(F.reply_to_message, F.text)
 async def on_feedback_reply(message: Message):
     if not _is_admin_message(message):
         return
-    prompt_text = message.reply_to_message.text or ""
+    prompt_text = message.reply_to_message.text or message.reply_to_message.caption or ""
     if "(project #" not in prompt_text:
         return
     project_id = int(prompt_text.split("(project #")[1].rstrip(")"))
@@ -266,7 +467,7 @@ async def on_feedback_reply(message: Message):
                 "Groq и резервный Gemini сейчас недоступны, поэтому переработка не выполнена. "
                 "Текущий черновик сохранён без изменений и ожидает дальнейших действий.\n\n"
                 f"Причина: {str(exc)[:500]}",
-                reply_markup=review_keyboard(project_id),
+                reply_markup=review_keyboard(project.id),
             )
             return
 
@@ -298,9 +499,7 @@ async def on_feedback_reply(message: Message):
             image_path=social_card.path if social_card else previous_draft.image_path,
             image_source=social_card.source if social_card else previous_draft.image_source,
             image_prompt=(
-                new_result.image_prompt
-                if image_requested and social_card
-                else previous_draft.image_prompt
+                new_result.image_prompt if image_requested and social_card else previous_draft.image_prompt
             ),
             source_url=project.source_url,
             project_url=project.project_url,
@@ -308,15 +507,6 @@ async def on_feedback_reply(message: Message):
         )
         project.drafts.append(new_draft)
         await session.commit()
-        if image_requested and new_draft.image_path:
-            try:
-                await message.bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=telegram_photo(new_draft.image_path),
-                    caption=f"Новая social card для версии {new_draft.version}",
-                )
-            except Exception:
-                pass
         await message.answer(
             f"Переработано через {rework_provider}, версия {new_draft.version}\n"
             f"Изображение: {'создано заново' if image_requested and social_card else 'сохранено без изменений'}\n\n"
@@ -327,21 +517,44 @@ async def on_feedback_reply(message: Message):
 
 @router.message(Command("scan_now"))
 async def on_scan_now(message: Message):
+    global _manual_scan_task
     if not _is_admin_message(message):
         await message.answer("Этот бот доступен только администратору.")
         return
-    await message.answer("Сканирую источники. Облачная AI-проверка может занять несколько минут...")
-    summary = await source_scanner.scan_once()
-    await message.answer(
-        "Сканирование завершено.\n"
-        f"Найдено сигналов: {summary['collected']}\n"
-        f"Отправлено на проверку: {summary['sent_for_review']}\n"
-        f"Отфильтровано: {summary['filtered']}\n"
-        f"Дубликаты/уже обработаны: {summary['duplicates']}\n"
-        f"Ошибки: {summary['errors']}\n"
-        f"Обработано через Groq: {summary['groq']}\n"
-        f"Обработано локальным режимом без AI: {summary['fallback']}"
+
+    if _manual_scan_task and not _manual_scan_task.done():
+        await message.answer("⏳ Сканирование уже выполняется. Повторный запуск не нужен.")
+        return
+
+    progress = await message.answer(
+        "🔎 Сканирование запущено. Я пришлю итог в это же сообщение, когда оно завершится."
     )
+
+    async def _run() -> None:
+        global _manual_scan_task
+        try:
+            summary = await source_scanner.scan_once()
+            text = (
+                "✅ Сканирование завершено.\n\n"
+                f"Найдено сигналов: {summary['collected']}\n"
+                f"Отправлено на проверку: {summary['sent_for_review']}\n"
+                f"Отфильтровано: {summary['filtered']}\n"
+                f"Дубликаты/уже обработаны: {summary['duplicates']}\n"
+                f"Ошибки: {summary['errors']}\n"
+                f"Обработано через Groq: {summary['groq']}\n"
+                f"Обработано локальным режимом без AI: {summary['fallback']}"
+            )
+            await progress.edit_text(text)
+        except Exception as exc:
+            logger.exception("Manual /scan_now failed: %s", exc)
+            try:
+                await progress.edit_text(f"❌ Сканирование завершилось ошибкой: {str(exc)[:800]}")
+            except Exception:
+                pass
+        finally:
+            _manual_scan_task = None
+
+    _manual_scan_task = asyncio.create_task(_run())
 
 
 @router.message(Command("status"))
