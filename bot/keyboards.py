@@ -46,6 +46,20 @@ def open_in_x_keyboard(text: str) -> InlineKeyboardMarkup:
     intent_url = f"https://twitter.com/intent/tweet?text={quote(text, safe='')}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Open in X", url=intent_url)],
+            [InlineKeyboardButton(text="🐦 Опубликовать в X / Twitter", url=intent_url)],
         ]
     )
+
+
+def archive_keyboard(has_deleted: bool = False) -> InlineKeyboardMarkup:
+    buttons = []
+    if has_deleted:
+        buttons.append([
+            InlineKeyboardButton(text="🗑 Очистить архив", callback_data="archive_clear_deleted")
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="archive_refresh"),
+        InlineKeyboardButton(text="📋 К очереди проверки", callback_data="archive_to_review"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+

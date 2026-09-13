@@ -1,16 +1,17 @@
-"""Admin review commands and callback handlers."""
 import asyncio
+import html
+import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InputMediaPhoto, Message
-from sqlalchemy import select
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputMediaPhoto, Message
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import selectinload
 
-from bot.keyboards import open_in_x_keyboard, review_keyboard
+from bot.keyboards import archive_keyboard, open_in_x_keyboard, review_keyboard
 from config import settings
 from db.database import get_session
-from db.models import Draft, Project, ProjectStatus
+from db.models import Draft, Project, ProjectStatus, PublishedPost
 from ingestion.scheduler import source_scanner
 from publishing.dispatcher import publish_project
 from services.ai_rework import rework_draft
@@ -21,8 +22,6 @@ from services.project_image import discover_project_image
 from services.project_link import discover_project_link
 from services.social_card import generate_social_card
 from services.health import collect_system_health
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -69,23 +68,45 @@ def _queue_meta(queue: list[Project], project_id: int) -> tuple[int, int, int | 
 
 def _review_caption(project: Project, draft: Draft, position: int, total: int) -> str:
     score = f"{project.legitimacy_score:.1f}/10" if project.legitimacy_score is not None else "n/a"
-    lines = [
-        f"🔎 REVIEW {position}/{total}  •  #{project.id}  •  {score}",
-        f"🚀 {draft.title}",
-        "",
-        draft.summary.strip(),
-        "",
-        "📝 What to do:",
-        draft.instructions.strip(),
-    ]
-    if draft.potential_reward:
-        lines += ["", f"💰 {draft.potential_reward.strip()}"]
-    if draft.risk_note:
-        lines += ["", f"⚠️ {draft.risk_note.strip()}"]
-    if draft.project_url:
-        lines += ["", f"🔗 {draft.project_url}"]
-    text = "\n".join(lines).strip()
-    return text if len(text) <= 1024 else text[:1019].rsplit(" ", 1)[0] + "…"
+    header = f"🔎 REVIEW {position}/{total}  •  #{project.id}  •  {score}"
+
+    source = draft.source_url or project.source_url or "Источник не указан"
+    project_url = draft.project_url or project.project_url or "⚠️ Не найдена — публикация заблокирована"
+
+    # Twitter draft formatted strictly <= 280 chars for free Twitter accounts
+    tw_section = ""
+    if draft.twitter_text:
+        tw = draft.twitter_text.strip()
+        if len(tw) > 280:
+            tw = tw[:279].rsplit(" ", 1)[0] + "…"
+        tw_section = f"\n\n2. Черновик для твиттера\n\n{tw}"
+
+    tg_header = "1. Черновик для телеграмм канала"
+    tg_body = draft.rendered_text()
+
+    meta_section = (
+        f"{header}\n\n"
+        f"🔒 Источник (виден только администратору):\n{source}\n\n"
+        f"Ссылка на проект (попадет в публичные посты):\n{project_url}"
+    )
+
+    full_text = f"{meta_section}\n\n{tg_header}\n\n{tg_body}{tw_section}"
+
+    if len(full_text) <= 1024:
+        return full_text
+
+    # If exceeding 1024 characters (Telegram limit for photo captions),
+    # smartly shorten the telegram draft body to fit while preserving links and twitter draft
+    overhead = len(meta_section) + len(f"\n\n{tg_header}\n\n") + len(tw_section)
+    avail_tg = 1024 - overhead - 5
+    if avail_tg > 80:
+        short_body = tg_body[:avail_tg].rsplit(" ", 1)[0] + "…"
+        res = f"{meta_section}\n\n{tg_header}\n\n{short_body}{tw_section}"
+        if len(res) <= 1024:
+            return res
+
+    return full_text[:1020].rsplit(" ", 1)[0] + "…"
+
 
 
 async def _replace_review_message(callback: CallbackQuery, project_id: int) -> None:
@@ -306,6 +327,9 @@ async def on_approve(callback: CallbackQuery):
 
     project_id = int(callback.data.split(":")[1])
     telegram_success = False
+    twitter_text: str | None = None
+    image_path: str | None = None
+
     async with get_session() as session:
         project = await _load_project(session, project_id)
         if not project or not project.latest_draft():
@@ -324,9 +348,13 @@ async def on_approve(callback: CallbackQuery):
             )
             return
 
+        latest_draft = project.latest_draft()
+        twitter_text = latest_draft.twitter_text
+        image_path = latest_draft.image_path
+
         project.status = ProjectStatus.APPROVED
         await session.commit()
-        results = await publish_project(callback.bot, project, project.latest_draft())
+        results = await publish_project(callback.bot, project, latest_draft)
         telegram_result = next(result for result in results if result.platform == "telegram")
         telegram_success = telegram_result.success
         project.status = ProjectStatus.PUBLISHED if telegram_success else ProjectStatus.APPROVED
@@ -340,17 +368,52 @@ async def on_approve(callback: CallbackQuery):
                 lines.append(f"{marker} {result.platform}: {detail}")
             x_result = next(result for result in results if result.platform == "x")
             fallback_keyboard = (
-                open_in_x_keyboard(project.latest_draft().twitter_text)
-                if not x_result.success and project.latest_draft().twitter_text
+                open_in_x_keyboard(latest_draft.twitter_text)
+                if not x_result.success and latest_draft.twitter_text
                 else None
             )
             await callback.message.answer("\n".join(lines), reply_markup=fallback_keyboard)
 
     if telegram_success:
+        if twitter_text and callback.message:
+            tw_text = twitter_text.strip()
+            if len(tw_text) > 280:
+                tw_text = tw_text[:279].rsplit(" ", 1)[0] + "…"
+            tw_keyboard = open_in_x_keyboard(tw_text)
+            tw_caption = (
+                "🐦 <b>Пост опубликован в Telegram!</b>\n\n"
+                "Черновик для публикации в X / Twitter:\n\n"
+                f"{tw_text}\n\n"
+                "👆 Сохраните фото выше и нажмите кнопку ниже, чтобы открыть Twitter с готовым текстом."
+            )
+            if len(tw_caption) > 1024:
+                tw_caption = tw_text[:1020].rsplit(" ", 1)[0] + "…"
+            if image_path:
+                try:
+                    await callback.bot.send_photo(
+                        chat_id=callback.message.chat.id,
+                        photo=telegram_photo(image_path),
+                        caption=tw_caption,
+                        parse_mode="HTML",
+                        reply_markup=tw_keyboard,
+                    )
+                except Exception as exc:
+                    logger.warning("Could not send Twitter photo handoff: %s", exc)
+                    await callback.message.answer(
+                        f"🐦 Черновик для X / Twitter:\n\n{tw_text}",
+                        reply_markup=tw_keyboard,
+                    )
+            else:
+                await callback.message.answer(
+                    f"🐦 Черновик для X / Twitter:\n\n{tw_text}",
+                    reply_markup=tw_keyboard,
+                )
+
         await _show_next_or_empty(callback, project_id)
         await callback.answer("Опубликовано в Telegram.")
     else:
-        await callback.answer("Telegram не опубликовал пост. Смотрите ошибку ниже.", show_alert=True)
+        await callback.answer("Telegram не опубликовал пост. Смотрите ошибку выше.", show_alert=True)
+
 
 
 @router.callback_query(F.data.startswith("delete:"))
@@ -536,12 +599,44 @@ async def on_feedback_reply(message: Message):
         )
         project.drafts.append(new_draft)
         await session.commit()
-        await message.answer(
-            f"Переработано через {rework_provider}, версия {new_draft.version}\n"
-            f"Изображение: {'создано заново' if image_requested and social_card else 'сохранено без изменений'}\n\n"
-            f"{new_draft.rendered_review_text()}",
-            reply_markup=review_keyboard(project.id),
-        )
+
+        if new_draft.image_path:
+            await ensure_draft_image(project, new_draft)
+            await session.commit()
+
+        queue = await _review_queue(session)
+        position, total, previous_id, next_id = _queue_meta(queue, project.id)
+        keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+        caption = _review_caption(project, new_draft, position, total)
+
+        if project.review_message_id and project.review_chat_id:
+            try:
+                await message.bot.delete_message(
+                    chat_id=project.review_chat_id,
+                    message_id=project.review_message_id,
+                )
+            except Exception:
+                pass
+
+        if message.reply_to_message:
+            try:
+                await message.reply_to_message.delete()
+            except Exception:
+                pass
+
+        if new_draft.image_path:
+            sent = await message.answer_photo(
+                photo=telegram_photo(new_draft.image_path),
+                caption=caption,
+                reply_markup=keyboard,
+            )
+        else:
+            sent = await message.answer(caption, reply_markup=keyboard)
+
+        project.review_chat_id = sent.chat.id
+        project.review_message_id = sent.message_id
+        await session.commit()
+
 
 
 @router.message(Command("scan_now"))
@@ -617,3 +712,130 @@ async def on_system_status(message: Message):
     )
     lines.extend(f"• {recommendation}" for recommendation in health.recommendations)
     await progress.edit_text("\n".join(lines))
+
+
+async def _render_archive_view() -> tuple[str, InlineKeyboardMarkup]:
+    async with get_session() as session:
+        published_count = (
+            await session.scalar(
+                select(func.count(Project.id)).where(Project.status == ProjectStatus.PUBLISHED)
+            )
+            or 0
+        )
+        deleted_count = (
+            await session.scalar(
+                select(func.count(Project.id)).where(Project.status == ProjectStatus.DELETED)
+            )
+            or 0
+        )
+        pending_count = (
+            await session.scalar(
+                select(func.count(Project.id)).where(Project.status == ProjectStatus.PENDING_REVIEW)
+            )
+            or 0
+        )
+
+        recent_query = await session.execute(
+            select(Project)
+            .where(Project.status.in_([ProjectStatus.PUBLISHED, ProjectStatus.DELETED]))
+            .order_by(Project.updated_at.desc(), Project.id.desc())
+            .limit(8)
+        )
+        recent_projects = list(recent_query.scalars().all())
+
+    lines = [
+        "📦 <b>Архив проектов</b>",
+        "",
+        "📊 <b>Статистика:</b>",
+        f"• ✅ Опубликовано: {published_count}",
+        f"• 🗑 Удалено / Отклонено: {deleted_count}",
+        f"• ⏳ В очереди проверки: {pending_count}",
+    ]
+
+    if recent_projects:
+        lines.extend(["", "🕒 <b>Последние записи в архиве:</b>"])
+        for p in recent_projects:
+            marker = "✅" if p.status == ProjectStatus.PUBLISHED else "🗑"
+            status_name = "Опубликован" if p.status == ProjectStatus.PUBLISHED else "Удален"
+            p_name = html.escape(p.name)
+            p_cat = html.escape(p.category or "opportunity")
+            chain_info = f", {html.escape(p.chain)}" if p.chain else ""
+            lines.append(f"{marker} #{p.id} <b>{p_name}</b> ({p_cat}{chain_info}) — {status_name}")
+    else:
+        lines.extend(["", "В архиве пока нет записей."])
+
+    if deleted_count > 0:
+        lines.extend(
+            [
+                "",
+                "ℹ️ Нажмите <b>«🗑 Очистить архив»</b>, чтобы удалить отклонённые записи и освободить место в базе данных.",
+            ]
+        )
+
+    markup = archive_keyboard(has_deleted=(deleted_count > 0))
+    return "\n".join(lines), markup
+
+
+@router.message(Command("archive"))
+async def on_archive(message: Message):
+    if not _is_admin_message(message):
+        return
+    text, markup = await _render_archive_view()
+    await message.answer(text, reply_markup=markup, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "archive_refresh")
+async def on_archive_refresh(callback: CallbackQuery):
+    if not _is_admin_callback(callback):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    text, markup = await _render_archive_view()
+    if callback.message:
+        try:
+            await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+        except Exception:
+            pass
+    await callback.answer("Архив обновлен.")
+
+
+@router.callback_query(F.data == "archive_clear_deleted")
+async def on_archive_clear_deleted(callback: CallbackQuery):
+    if not _is_admin_callback(callback):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+
+    cleared_count = 0
+    async with get_session() as session:
+        del_ids_result = await session.execute(
+            select(Project.id).where(Project.status == ProjectStatus.DELETED)
+        )
+        del_ids = list(del_ids_result.scalars().all())
+        cleared_count = len(del_ids)
+        if cleared_count > 0:
+            await session.execute(
+                delete(PublishedPost).where(PublishedPost.project_id.in_(del_ids))
+            )
+            await session.execute(delete(Draft).where(Draft.project_id.in_(del_ids)))
+            await session.execute(delete(Project).where(Project.id.in_(del_ids)))
+            await session.commit()
+
+    text, markup = await _render_archive_view()
+    if callback.message:
+        try:
+            await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+        except Exception:
+            pass
+    await callback.answer(
+        f"🗑 Архив очищен! Удалено записей: {cleared_count}", show_alert=True
+    )
+
+
+@router.callback_query(F.data == "archive_to_review")
+async def on_archive_to_review(callback: CallbackQuery):
+    if not _is_admin_callback(callback):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    if callback.message:
+        await _open_review_queue(callback.message)
+    await callback.answer()
+

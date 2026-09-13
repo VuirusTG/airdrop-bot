@@ -103,20 +103,8 @@ class Draft(Base):
         ]
         if self.twitter_text:
             parts += ["", "2. Черновик для твиттера", "", self.twitter_text]
-        parts += ["", "----------", "", "3. Изображение"]
-        if self.image_path:
-            if self.image_source == "generated_social_card_cloudflare":
-                label = "AI social card (Cloudflare Workers AI + локальный макет)"
-            elif self.image_source in {"generated_social_card", "generated_social_card_local_ninja"}:
-                label = "Ninja Scout social card (локальный резерв)"
-            else:
-                label = "Рекомендуемое изображение со страницы источника"
-            parts.append(f"{label}: {self.image_path}")
-        else:
-            parts.append("Подходящее официальное изображение автоматически не найдено.")
-        if self.image_prompt:
-            parts += ["", "Промпт для генерации:", self.image_prompt]
         return "\n".join(parts)
+
 
 
 class PublishedPost(Base):
