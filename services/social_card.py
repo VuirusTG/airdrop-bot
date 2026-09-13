@@ -24,7 +24,7 @@ TEMPLATE_PATH = ROOT / "images" / "brand" / "ninja-female-template.png"
 
 WIDTH = 1024
 HEIGHT = 682
-CARD_STYLE_VERSION = "ninja-scout-cyber-v8"
+CARD_STYLE_VERSION = "ninja-scout-cyber-v9"
 
 URL_RE = re.compile(r"https?://[^\s)\]}>,]+", re.IGNORECASE)
 HEADLINE_WORDS = re.compile(
@@ -345,17 +345,308 @@ def _draw_btc_hires(draw: ImageDraw.ImageDraw, s: int):
     draw.text((cx, cy - int(s * 0.02)), "₿", fill=(255, 255, 255, 255), font=font, anchor="mm")
 
 
+def _draw_base_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Base logo (Coinbase blue token with white mark)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(0, 82, 255, 255))
+    r_in = int(s * 0.28)
+    draw.ellipse((cx - r_in, cy - r_in, cx + r_in, cy + r_in), fill=(255, 255, 255, 255))
+    draw.rectangle((cx, cy - int(s * 0.09), cx + r_in + 2, cy + int(s * 0.09)), fill=(0, 82, 255, 255))
+
+
+def _draw_arbitrum_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Arbitrum logo (navy token with geometric white & cyan 'A')."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(18, 44, 76, 255))
+    draw.polygon([
+        (cx - int(s * 0.30), cy + int(s * 0.26)),
+        (cx - int(s * 0.16), cy + int(s * 0.26)),
+        (cx - int(s * 0.02), cy - int(s * 0.26)),
+        (cx - int(s * 0.16), cy - int(s * 0.26)),
+    ], fill=(40, 160, 240, 255))
+    draw.polygon([
+        (cx + int(s * 0.30), cy + int(s * 0.26)),
+        (cx + int(s * 0.16), cy + int(s * 0.26)),
+        (cx + int(s * 0.02), cy - int(s * 0.26)),
+        (cx + int(s * 0.16), cy - int(s * 0.26)),
+    ], fill=(255, 255, 255, 255))
+    draw.polygon([
+        (cx - int(s * 0.08), cy + int(s * 0.05)),
+        (cx + int(s * 0.08), cy + int(s * 0.05)),
+        (cx, cy - int(s * 0.10)),
+    ], fill=(40, 160, 240, 255))
+
+
+def _draw_polygon_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Polygon logo (purple token with white geometric loop)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(130, 71, 229, 255))
+    w = max(2, int(s * 0.065))
+    pts = [
+        (cx - int(s * 0.24), cy - int(s * 0.02)),
+        (cx - int(s * 0.12), cy - int(s * 0.18)),
+        (cx + int(s * 0.04), cy - int(s * 0.18)),
+        (cx + int(s * 0.16), cy - int(s * 0.02)),
+        (cx + int(s * 0.04), cy + int(s * 0.16)),
+        (cx - int(s * 0.04), cy + int(s * 0.16)),
+        (cx - int(s * 0.16), cy + int(s * 0.02)),
+    ]
+    draw.line(pts, fill=(255, 255, 255, 255), width=w, joint="curve")
+    draw.line([
+        (cx + int(s * 0.16), cy - int(s * 0.02)),
+        (cx + int(s * 0.24), cy + int(s * 0.08)),
+        (cx + int(s * 0.16), cy + int(s * 0.20)),
+        (cx + int(s * 0.04), cy + int(s * 0.16)),
+    ], fill=(255, 255, 255, 255), width=w, joint="curve")
+
+
+def _draw_optimism_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Optimism logo (red token with white 'OP')."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 4, 32, 255))
+    font = _get_font("arialbd.ttf", int(s * 0.42))
+    draw.text((cx, cy - int(s * 0.02)), "OP", fill=(255, 255, 255, 255), font=font, anchor="mm")
+
+
+def _draw_zksync_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official zkSync logo (dark token with white and blue chevrons)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(16, 20, 36, 255))
+    draw.polygon([
+        (cx - int(s * 0.22), cy - int(s * 0.22)),
+        (cx - int(s * 0.08), cy - int(s * 0.22)),
+        (cx + int(s * 0.04), cy),
+        (cx - int(s * 0.08), cy + int(s * 0.22)),
+        (cx - int(s * 0.22), cy + int(s * 0.22)),
+        (cx - int(s * 0.10), cy),
+    ], fill=(255, 255, 255, 255))
+    draw.polygon([
+        (cx - int(s * 0.04), cy - int(s * 0.22)),
+        (cx + int(s * 0.10), cy - int(s * 0.22)),
+        (cx + int(s * 0.22), cy),
+        (cx + int(s * 0.10), cy + int(s * 0.22)),
+        (cx - int(s * 0.04), cy + int(s * 0.22)),
+        (cx + int(s * 0.08), cy),
+    ], fill=(68, 98, 245, 255))
+
+
+def _draw_ton_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official TON logo (cyan token with faceted diamond crystal)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(0, 152, 234, 255))
+    top_y = cy - int(s * 0.22)
+    bot_y = cy + int(s * 0.24)
+    mid_y = cy - int(s * 0.04)
+    w_out = int(s * 0.24)
+    pts = [(cx, top_y), (cx + w_out, mid_y), (cx, bot_y), (cx - w_out, mid_y)]
+    draw.polygon(pts, fill=(255, 255, 255, 255))
+    draw.polygon([(cx, top_y), (cx + w_out, mid_y), (cx, bot_y)], fill=(215, 240, 255, 255))
+    draw.line([(cx, top_y), (cx, bot_y)], fill=(0, 152, 234, 255), width=max(2, int(s * 0.03)))
+
+
+def _draw_sui_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Sui logo (blue token with white droplet)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(42, 130, 228, 255))
+    pts = [
+        (cx, cy - int(s * 0.26)),
+        (cx + int(s * 0.20), cy + int(s * 0.10)),
+        (cx, cy + int(s * 0.24)),
+        (cx - int(s * 0.20), cy + int(s * 0.10)),
+    ]
+    draw.polygon(pts, fill=(255, 255, 255, 255))
+    pts_in = [
+        (cx, cy - int(s * 0.12)),
+        (cx + int(s * 0.10), cy + int(s * 0.08)),
+        (cx, cy + int(s * 0.16)),
+        (cx - int(s * 0.10), cy + int(s * 0.08)),
+    ]
+    draw.polygon(pts_in, fill=(42, 130, 228, 255))
+
+
+def _draw_avax_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Avalanche logo (red token with white split 'A')."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(232, 65, 66, 255))
+    draw.polygon([
+        (cx + int(s * 0.02), cy - int(s * 0.24)),
+        (cx + int(s * 0.26), cy + int(s * 0.22)),
+        (cx - int(s * 0.06), cy + int(s * 0.22)),
+    ], fill=(255, 255, 255, 255))
+    draw.polygon([
+        (cx - int(s * 0.16), cy - int(s * 0.04)),
+        (cx - int(s * 0.04), cy + int(s * 0.22)),
+        (cx - int(s * 0.26), cy + int(s * 0.22)),
+    ], fill=(255, 255, 255, 255))
+
+
+def _draw_aptos_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Aptos logo (dark token with horizontal white bars)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(20, 25, 24, 255))
+    w = int(s * 0.54)
+    bh = int(s * 0.08)
+    draw.rectangle((cx - w//2, cy - int(s * 0.18), cx + w//2, cy - int(s * 0.18) + bh), fill=(255, 255, 255, 255))
+    draw.rectangle((cx - w//2, cy - bh//2, cx + w//2, cy + bh//2), fill=(255, 255, 255, 255))
+    draw.rectangle((cx - w//2, cy + int(s * 0.18) - bh, cx + w//2, cy + int(s * 0.18)), fill=(255, 255, 255, 255))
+
+
+def _draw_scroll_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Scroll logo (warm parchment token with scroll swirl)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 236, 209, 255))
+    sw = max(2, int(s * 0.06))
+    pts = [
+        (cx - int(s * 0.20), cy - int(s * 0.12)),
+        (cx + int(s * 0.12), cy - int(s * 0.12)),
+        (cx + int(s * 0.18), cy),
+        (cx + int(s * 0.12), cy + int(s * 0.12)),
+        (cx - int(s * 0.14), cy + int(s * 0.12)),
+        (cx - int(s * 0.18), cy),
+        (cx - int(s * 0.12), cy - int(s * 0.04)),
+        (cx + int(s * 0.06), cy - int(s * 0.04)),
+    ]
+    draw.line(pts, fill=(210, 115, 30, 255), width=sw, joint="curve")
+
+
+def _draw_linea_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Linea logo (dark token with cyan 'L')."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(18, 20, 24, 255))
+    lw = max(2, int(s * 0.08))
+    draw.line([
+        (cx - int(s * 0.16), cy - int(s * 0.20)),
+        (cx - int(s * 0.16), cy + int(s * 0.18)),
+        (cx + int(s * 0.18), cy + int(s * 0.18)),
+    ], fill=(97, 218, 251, 255), width=lw)
+
+
+def _draw_near_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Near logo (black token with green 'N')."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(0, 0, 0, 255))
+    font = _get_font("arialbd.ttf", int(s * 0.55))
+    draw.text((cx, cy - int(s * 0.02)), "N", fill=(0, 236, 151, 255), font=font, anchor="mm")
+
+
+def _draw_tron_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Tron logo (red token with white geometric prism)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(235, 0, 41, 255))
+    pts = [
+        (cx, cy - int(s * 0.24)),
+        (cx + int(s * 0.22), cy - int(s * 0.08)),
+        (cx, cy + int(s * 0.24)),
+        (cx - int(s * 0.22), cy - int(s * 0.08)),
+    ]
+    draw.polygon(pts, outline=(255, 255, 255, 255), width=max(2, int(s * 0.04)), fill=None)
+    draw.line([(cx, cy - int(s * 0.24)), (cx, cy + int(s * 0.24))], fill=(255, 255, 255, 255), width=max(2, int(s * 0.03)))
+
+
+def _draw_monad_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Monad logo (purple token with 'M')."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(131, 96, 246, 255))
+    font = _get_font("impact.ttf", int(s * 0.52))
+    draw.text((cx, cy - int(s * 0.02)), "M", fill=(255, 255, 255, 255), font=font, anchor="mm")
+
+
+def _detect_chain(chain: str | None, name: str = "", instructions: str = "") -> str:
+    """Detect or normalize chain name from explicit field or keywords in name/steps."""
+    raw = (chain or "").strip()
+    if raw and raw.upper() not in {"EVM", "CRYPTO", "MULTICHAIN", "TESTNET", "MAINNET", "BLOCKCHAIN", ""}:
+        return raw
+
+    combined = f"{name} {instructions}".upper()
+    candidates = [
+        ("BASE", "BASE"),
+        ("ARBITRUM", "ARBITRUM"),
+        ("ARB", "ARBITRUM"),
+        ("SOLANA", "SOLANA"),
+        ("SOL", "SOLANA"),
+        ("POLYGON", "POLYGON"),
+        ("MATIC", "POLYGON"),
+        ("OPTIMISM", "OPTIMISM"),
+        ("OP MAINNET", "OPTIMISM"),
+        ("ZKSYNC", "ZKSYNC"),
+        ("BNB", "BNB CHAIN"),
+        ("BSC", "BNB CHAIN"),
+        ("BINANCE", "BNB CHAIN"),
+        ("BITCOIN", "BITCOIN"),
+        ("BTC", "BITCOIN"),
+        ("RUNES", "BITCOIN"),
+        ("TON", "TON"),
+        ("SUI", "SUI"),
+        ("AVALANCHE", "AVALANCHE"),
+        ("AVAX", "AVALANCHE"),
+        ("APTOS", "APTOS"),
+        ("SCROLL", "SCROLL"),
+        ("LINEA", "LINEA"),
+        ("NEAR", "NEAR"),
+        ("TRON", "TRON"),
+        ("MONAD", "MONAD"),
+    ]
+    for keyword, chain_label in candidates:
+        if re.search(rf"\b{re.escape(keyword)}\b", combined):
+            return chain_label
+    return raw or "ETHEREUM"
+
+
 def _get_chain_icon(chain: str | None, size: int = 36) -> Image.Image:
-    """Dynamically return the matching high-resolution chain icon."""
+    """Dynamically return the matching high-resolution official chain icon."""
     c = (chain or "").upper().strip()
-    if any(k in c for k in ["SOL", "SOLANA"]):
+    
+    # Specific L2s and alternative L1s FIRST to prevent generic Ethereum match
+    if any(k in c for k in ["BASE", "COINBASE"]):
+        return _render_supersampled(_draw_base_hires, size=size)
+    elif any(k in c for k in ["ARBITRUM", "ARB"]):
+        return _render_supersampled(_draw_arbitrum_hires, size=size)
+    elif any(k in c for k in ["POLYGON", "MATIC", "POL"]):
+        return _render_supersampled(_draw_polygon_hires, size=size)
+    elif any(k in c for k in ["OPTIMISM", "OP MAINNET", "OPTIMISTIC"]):
+        return _render_supersampled(_draw_optimism_hires, size=size)
+    elif any(k in c for k in ["ZKSYNC", "ERA"]):
+        return _render_supersampled(_draw_zksync_hires, size=size)
+    elif any(k in c for k in ["SCROLL"]):
+        return _render_supersampled(_draw_scroll_hires, size=size)
+    elif any(k in c for k in ["LINEA"]):
+        return _render_supersampled(_draw_linea_hires, size=size)
+    elif any(k in c for k in ["SOL", "SOLANA"]):
         return _render_supersampled(_draw_solana_hires, size=size)
     elif any(k in c for k in ["BNB", "BSC", "BINANCE"]):
         return _render_supersampled(_draw_bnb_hires, size=size)
-    elif any(k in c for k in ["BTC", "BITCOIN", "RUNES", "BRC"]):
+    elif any(k in c for k in ["BTC", "BITCOIN", "RUNES", "BRC", "ORDINALS"]):
         return _render_supersampled(_draw_btc_hires, size=size)
+    elif any(k in c for k in ["TON", "THE OPEN NETWORK"]):
+        return _render_supersampled(_draw_ton_hires, size=size)
+    elif any(k in c for k in ["SUI"]):
+        return _render_supersampled(_draw_sui_hires, size=size)
+    elif any(k in c for k in ["AVAX", "AVALANCHE"]):
+        return _render_supersampled(_draw_avax_hires, size=size)
+    elif any(k in c for k in ["APTOS", "APT"]):
+        return _render_supersampled(_draw_aptos_hires, size=size)
+    elif any(k in c for k in ["NEAR"]):
+        return _render_supersampled(_draw_near_hires, size=size)
+    elif any(k in c for k in ["TRON", "TRX"]):
+        return _render_supersampled(_draw_tron_hires, size=size)
+    elif any(k in c for k in ["MONAD"]):
+        return _render_supersampled(_draw_monad_hires, size=size)
     else:
-        # Default: Ethereum / EVM 3D diamond
+        # Default: Ethereum 3D diamond
         return _render_supersampled(_draw_eth_3d_hires, size=size)
 
 
@@ -530,12 +821,13 @@ def _render(
 
     # Right: NETWORK
     draw.text((248, stats_top + 12), "NETWORK", fill=COLOR_MUTED, font=font_lbl)
-    net_name = _ascii_display(chain or "ETHEREUM").upper()[:10]
+    detected_chain = _detect_chain(chain, name, instructions)
+    net_name = _ascii_display(detected_chain).upper()[:10]
     font_net = _get_font("arialbd.ttf", 20 if len(net_name) <= 8 else 17)
     draw.text((248, stats_top + 40), net_name, fill=accent, font=font_net)
     
     # Dynamic Chain Icon
-    chain_ic = _get_chain_icon(chain, size=36)
+    chain_ic = _get_chain_icon(detected_chain, size=36)
     canvas.paste(chain_ic, (384, stats_top + 28), chain_ic)
 
     # 6. Bottom Social Bar
