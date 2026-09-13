@@ -529,9 +529,9 @@ async def on_regenerate_image(callback: CallbackQuery):
         previous_draft = project.latest_draft()
         new_version = previous_draft.version + 1
         official_image = await discover_project_image(project.source_url)
-        regeneration_prompt = (
-            f"Cyber ninja kunoichi, neon energy portal, futuristic crypto ecosystem, chain {project.chain or 'crypto'}, variant {new_version}"
-        )
+        variant_themes = ["", "синий", "фиолетовый", "красный", "золотой"]
+        theme = variant_themes[new_version % len(variant_themes)]
+        regeneration_prompt = theme or previous_draft.image_prompt or ""
         loop_time = int(asyncio.get_event_loop().time())
         social_card = await generate_social_card(
             name=project.name,
