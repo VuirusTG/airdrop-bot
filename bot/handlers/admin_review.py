@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+import re
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -15,7 +16,7 @@ from db.models import Draft, Project, ProjectStatus, PublishedPost
 from ingestion.scheduler import source_scanner
 from publishing.dispatcher import publish_project
 from services.ai_rework import rework_draft
-from services.image_rework import requests_image_rework
+from services.image_rework import classify_rework_intent, requests_image_rework
 from services.llm_draft import DraftResult
 from services.media import ensure_draft_image, telegram_photo
 from services.project_image import discover_project_image
@@ -30,12 +31,47 @@ awaiting_feedback: dict[int, bool] = {}
 _manual_scan_task: asyncio.Task | None = None
 
 
-def _is_admin_message(message: Message) -> bool:
-    return bool(message.from_user and message.from_user.id == settings.ADMIN_USER_ID)
+async def _is_admin_message(message: Message) -> bool:
+    user_id = message.from_user.id if message.from_user else 0
+    if not user_id:
+        return False
+    if settings.ADMIN_USER_ID and user_id != settings.ADMIN_USER_ID:
+        logger.warning(
+            "Rejected message from unauthorized user %s (ADMIN_USER_ID is %s)",
+            user_id,
+            settings.ADMIN_USER_ID,
+        )
+        try:
+            await message.answer(
+                f"⛔ <b>Доступ запрещён</b>\n\n"
+                f"Ваш Telegram ID: <code>{user_id}</code>\n"
+                f"ADMIN_USER_ID в боте: <code>{settings.ADMIN_USER_ID}</code>\n\n"
+                f"Чтобы управлять ботом, укажите этот ID в переменной <code>ADMIN_USER_ID</code> на Render.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return False
+    return True
 
 
-def _is_admin_callback(callback: CallbackQuery) -> bool:
-    return callback.from_user.id == settings.ADMIN_USER_ID
+async def _is_admin_callback(callback: CallbackQuery) -> bool:
+    user_id = callback.from_user.id if callback.from_user else 0
+    if not user_id:
+        return False
+    if settings.ADMIN_USER_ID and user_id != settings.ADMIN_USER_ID:
+        logger.warning(
+            "Rejected callback from unauthorized user %s (ADMIN_USER_ID is %s)",
+            user_id,
+            settings.ADMIN_USER_ID,
+        )
+        try:
+            await callback.answer(f"Нет доступа. Ваш ID: {user_id}", show_alert=True)
+        except Exception:
+            pass
+        return False
+    return True
+
 
 
 async def _load_project(session, project_id: int) -> Project | None:
@@ -220,37 +256,71 @@ async def _open_review_queue(message: Message) -> None:
             await message.answer("В очереди найден проект без черновика.")
             return
         if draft.image_path:
-            await ensure_draft_image(project, draft)
-            await session.commit()
+            try:
+                await ensure_draft_image(project, draft)
+                await session.commit()
+            except Exception as exc:
+                logger.warning("ensure_draft_image failed for project #%s: %s", project.id, exc)
 
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
         keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
         caption = _review_caption(project, draft, position, total)
-        if draft.image_path:
-            sent = await message.bot.send_photo(
-                chat_id=message.chat.id,
-                photo=telegram_photo(draft.image_path),
-                caption=caption,
-                reply_markup=keyboard,
-            )
+        sent = None
+        photo_input = telegram_photo(draft.image_path) if draft.image_path else None
+        if photo_input:
+            try:
+                sent = await message.bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=photo_input,
+                    caption=caption,
+                    reply_markup=keyboard,
+                )
+            except Exception as exc:
+                logger.warning("Failed to send review photo for project #%s (%s): %s; falling back to text", project.id, draft.image_path, exc)
+                sent = await message.answer(caption, reply_markup=keyboard)
         else:
             sent = await message.answer(caption, reply_markup=keyboard)
-        project.review_chat_id = message.chat.id
+
+        project.review_chat_id = sent.chat.id
         project.review_message_id = sent.message_id
         await session.commit()
 
 
+@router.message(Command("start"))
+@router.message(Command("help"))
+async def on_start_help(message: Message):
+    if not await _is_admin_message(message):
+        return
+    text = (
+        "🤖 <b>Airdrop Review Bot</b>\n\n"
+        "Доступные команды:\n"
+        "• /review — открыть очередь черновиков на модерацию\n"
+        "• /archive — открыть архив опубликованных и удалённых проектов\n"
+        "• /scan_now — запустить немедленное сканирование источников\n"
+        "• /status — проверить статус подключений и AI-провайдеров\n\n"
+        "В очереди черновиков вы можете:\n"
+        "• <b>✅ Approve</b> — опубликовать пост в Telegram и Twitter/X\n"
+        "• <b>🔁 Rework</b> — отправить правки (по тексту или внешнему виду)\n"
+        "• <b>🗑 Delete</b> — удалить проект из очереди\n"
+        "• <b>🎨 Regenerate image</b> — перегенерировать social card"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
 @router.message(Command("review"))
 async def on_review(message: Message):
-    if not _is_admin_message(message):
+    if not await _is_admin_message(message):
         return
-    await _open_review_queue(message)
+    try:
+        await _open_review_queue(message)
+    except Exception as exc:
+        logger.exception("Error in on_review: %s", exc)
+        await message.answer(f"⚠️ Ошибка при открытии очереди: {exc}")
 
 
 @router.callback_query(F.data.startswith("review_info:"))
 async def on_review_info(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
     async with get_session() as session:
         queue = await _review_queue(session)
@@ -261,8 +331,7 @@ async def on_review_info(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("review_prev:"))
 async def on_review_prev(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
     current_id = int(callback.data.split(":")[1])
     async with get_session() as session:
@@ -279,8 +348,7 @@ async def on_review_prev(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("review_next:"))
 async def on_review_next(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
     current_id = int(callback.data.split(":")[1])
     async with get_session() as session:
@@ -321,8 +389,7 @@ async def _show_next_or_empty(callback: CallbackQuery, excluded_id: int) -> None
 
 @router.callback_query(F.data.startswith("approve:"))
 async def on_approve(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
 
     project_id = int(callback.data.split(":")[1])
@@ -388,11 +455,12 @@ async def on_approve(callback: CallbackQuery):
             )
             if len(tw_caption) > 1024:
                 tw_caption = tw_text[:1020].rsplit(" ", 1)[0] + "…"
-            if image_path:
+            photo_to_send = telegram_photo(image_path) if image_path else None
+            if photo_to_send:
                 try:
                     await callback.bot.send_photo(
                         chat_id=callback.message.chat.id,
-                        photo=telegram_photo(image_path),
+                        photo=photo_to_send,
                         caption=tw_caption,
                         parse_mode="HTML",
                         reply_markup=tw_keyboard,
@@ -415,11 +483,9 @@ async def on_approve(callback: CallbackQuery):
         await callback.answer("Telegram не опубликовал пост. Смотрите ошибку выше.", show_alert=True)
 
 
-
 @router.callback_query(F.data.startswith("delete:"))
 async def on_delete(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
     project_id = int(callback.data.split(":")[1])
     async with get_session() as session:
@@ -435,14 +501,13 @@ async def on_delete(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("rework:"))
 async def on_rework(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
     project_id = int(callback.data.split(":")[1])
     awaiting_feedback[project_id] = True
     if callback.message:
         await callback.message.reply(
-            "Ответьте на это сообщение и напишите, что изменить в черновике.\n"
+            "Ответьте на это сообщение и напишите, что изменить в черновике (по тексту или по картинке):\n"
             f"(project #{project_id})"
         )
     await callback.answer()
@@ -450,8 +515,7 @@ async def on_rework(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("regen_image:"))
 async def on_regenerate_image(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
     project_id = int(callback.data.split(":")[1])
     await callback.answer("Генерирую новую картинку...")
@@ -465,9 +529,10 @@ async def on_regenerate_image(callback: CallbackQuery):
         previous_draft = project.latest_draft()
         new_version = previous_draft.version + 1
         official_image = await discover_project_image(project.source_url)
-        regeneration_prompt = previous_draft.image_prompt or (
-            f"{project.category} opportunity, red and teal cinematic environment"
+        regeneration_prompt = (
+            f"Cyber ninja kunoichi, neon energy portal, futuristic crypto ecosystem, chain {project.chain or 'crypto'}, variant {new_version}"
         )
+        loop_time = int(asyncio.get_event_loop().time())
         social_card = await generate_social_card(
             name=project.name,
             category=project.category,
@@ -476,7 +541,7 @@ async def on_regenerate_image(callback: CallbackQuery):
             official_image_url=official_image.url if official_image else None,
             image_prompt=regeneration_prompt,
             project_url=project.project_url,
-            generation_key=f"project-{project.id}-v{new_version}",
+            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
             potential_reward=previous_draft.potential_reward,
         )
         if not social_card:
@@ -515,14 +580,20 @@ async def on_regenerate_image(callback: CallbackQuery):
 
 @router.message(F.reply_to_message, F.text)
 async def on_feedback_reply(message: Message):
-    if not _is_admin_message(message):
+    if not await _is_admin_message(message):
         return
     prompt_text = message.reply_to_message.text or message.reply_to_message.caption or ""
     if "(project #" not in prompt_text:
         return
-    project_id = int(prompt_text.split("(project #")[1].rstrip(")"))
-    if project_id not in awaiting_feedback:
+    try:
+        project_id = int(prompt_text.split("(project #")[1].split(")")[0].strip())
+    except (ValueError, IndexError):
         return
+
+    awaiting_feedback.pop(project_id, None)
+    feedback_text = message.text.strip()
+    intent = classify_rework_intent(feedback_text)
+    logger.info("Rework intent for project #%s: '%s' (feedback: '%s')", project_id, intent, feedback_text)
 
     async with get_session() as session:
         project = await _load_project(session, project_id)
@@ -534,51 +605,70 @@ async def on_feedback_reply(message: Message):
             project.project_url = await discover_project_link(
                 project.source_url, project.raw_data or "", project.name
             )
-        previous = DraftResult(
-            title=previous_draft.title,
-            summary=previous_draft.summary,
-            instructions=previous_draft.instructions,
-            potential_reward=previous_draft.potential_reward,
-            risk_note=previous_draft.risk_note,
-            twitter_text=previous_draft.twitter_text,
-            image_prompt=previous_draft.image_prompt,
-        )
-        try:
-            new_result, rework_provider = await rework_draft(
-                project.name,
-                project.raw_data,
-                project.chain,
-                project.source_url,
-                project.project_url,
-                previous,
-                message.text,
-            )
-        except Exception as exc:
-            await session.rollback()
-            await message.answer(
-                "Groq и резервный Gemini сейчас недоступны, поэтому переработка не выполнена. "
-                "Текущий черновик сохранён без изменений и ожидает дальнейших действий.\n\n"
-                f"Причина: {str(exc)[:500]}",
-                reply_markup=review_keyboard(project.id),
-            )
-            return
 
-        del awaiting_feedback[project_id]
-        image_requested = requests_image_rework(message.text)
+        new_result = None
         social_card = None
-        if image_requested:
-            official_image = await discover_project_image(project.source_url)
-            social_card = await generate_social_card(
-                name=project.name,
-                category=project.category,
-                chain=project.chain,
-                instructions=new_result.instructions,
-                official_image_url=official_image.url if official_image else None,
-                image_prompt=new_result.image_prompt,
-                project_url=project.project_url,
-                generation_key=f"project-{project.id}-v{previous_draft.version + 1}",
-                potential_reward=new_result.potential_reward,
+
+        if intent in ("text_only", "both"):
+            previous = DraftResult(
+                title=previous_draft.title,
+                summary=previous_draft.summary,
+                instructions=previous_draft.instructions,
+                potential_reward=previous_draft.potential_reward,
+                risk_note=previous_draft.risk_note,
+                twitter_text=previous_draft.twitter_text,
+                image_prompt=previous_draft.image_prompt,
             )
+            try:
+                new_result, rework_provider = await rework_draft(
+                    project.name,
+                    project.raw_data,
+                    project.chain,
+                    project.source_url,
+                    project.project_url,
+                    previous,
+                    feedback_text,
+                )
+            except Exception as exc:
+                await session.rollback()
+                await message.answer(
+                    "Groq и резервный Gemini сейчас недоступны, поэтому переработка текста не выполнена. "
+                    "Текущий черновик сохранён без изменений.\n\n"
+                    f"Причина: {str(exc)[:500]}",
+                    reply_markup=review_keyboard(project.id),
+                )
+                return
+        else:
+            # intent == "image_only": Keep exact existing draft text!
+            new_result = DraftResult(
+                title=previous_draft.title,
+                summary=previous_draft.summary,
+                instructions=previous_draft.instructions,
+                potential_reward=previous_draft.potential_reward,
+                risk_note=previous_draft.risk_note,
+                twitter_text=previous_draft.twitter_text,
+                image_prompt=f"{previous_draft.image_prompt or ''}; reviewer visual request: {feedback_text}",
+            )
+
+        if intent in ("image_only", "both"):
+            try:
+                official_image = await discover_project_image(project.source_url)
+                img_prompt = f"{previous_draft.image_prompt or ''}; visual feedback: {feedback_text}".strip(" ;")
+                loop_time = int(asyncio.get_event_loop().time())
+                social_card = await generate_social_card(
+                    name=project.name,
+                    category=project.category,
+                    chain=project.chain,
+                    instructions=new_result.instructions,
+                    official_image_url=official_image.url if official_image else None,
+                    image_prompt=img_prompt,
+                    project_url=project.project_url,
+                    generation_key=f"project-{project.id}-v{previous_draft.version + 1}-{loop_time}",
+                    potential_reward=new_result.potential_reward,
+                )
+            except Exception as exc:
+                logger.warning("Failed to generate new social card in rework: %s", exc)
+
         new_draft = Draft(
             project_id=project.id,
             version=previous_draft.version + 1,
@@ -591,18 +681,21 @@ async def on_feedback_reply(message: Message):
             image_path=social_card.path if social_card else previous_draft.image_path,
             image_source=social_card.source if social_card else previous_draft.image_source,
             image_prompt=(
-                new_result.image_prompt if image_requested and social_card else previous_draft.image_prompt
+                new_result.image_prompt if (social_card or intent in ("image_only", "both")) else previous_draft.image_prompt
             ),
             source_url=project.source_url,
             project_url=project.project_url,
-            rework_feedback=message.text,
+            rework_feedback=feedback_text,
         )
         project.drafts.append(new_draft)
         await session.commit()
 
         if new_draft.image_path:
-            await ensure_draft_image(project, new_draft)
-            await session.commit()
+            try:
+                await ensure_draft_image(project, new_draft)
+                await session.commit()
+            except Exception:
+                pass
 
         queue = await _review_queue(session)
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
@@ -624,12 +717,18 @@ async def on_feedback_reply(message: Message):
             except Exception:
                 pass
 
-        if new_draft.image_path:
-            sent = await message.answer_photo(
-                photo=telegram_photo(new_draft.image_path),
-                caption=caption,
-                reply_markup=keyboard,
-            )
+        photo_to_send = telegram_photo(new_draft.image_path) if new_draft.image_path else None
+        sent = None
+        if photo_to_send:
+            try:
+                sent = await message.answer_photo(
+                    photo=photo_to_send,
+                    caption=caption,
+                    reply_markup=keyboard,
+                )
+            except Exception as exc:
+                logger.warning("Could not send rework photo card: %s; falling back to text", exc)
+                sent = await message.answer(caption, reply_markup=keyboard)
         else:
             sent = await message.answer(caption, reply_markup=keyboard)
 
@@ -642,8 +741,7 @@ async def on_feedback_reply(message: Message):
 @router.message(Command("scan_now"))
 async def on_scan_now(message: Message):
     global _manual_scan_task
-    if not _is_admin_message(message):
-        await message.answer("Этот бот доступен только администратору.")
+    if not await _is_admin_message(message):
         return
 
     if _manual_scan_task and not _manual_scan_task.done():
@@ -684,7 +782,7 @@ async def on_scan_now(message: Message):
 @router.message(Command("status"))
 @router.message(Command("channel_status"))
 async def on_system_status(message: Message):
-    if not _is_admin_message(message):
+    if not await _is_admin_message(message):
         return
     progress = await message.answer("Проверяю источники и подключения...")
     health = await collect_system_health(message.bot)
@@ -738,7 +836,7 @@ async def _render_archive_view() -> tuple[str, InlineKeyboardMarkup]:
         recent_query = await session.execute(
             select(Project)
             .where(Project.status.in_([ProjectStatus.PUBLISHED, ProjectStatus.DELETED]))
-            .order_by(Project.updated_at.desc(), Project.id.desc())
+            .order_by(Project.id.desc())
             .limit(8)
         )
         recent_projects = list(recent_query.scalars().all())
@@ -757,7 +855,7 @@ async def _render_archive_view() -> tuple[str, InlineKeyboardMarkup]:
         for p in recent_projects:
             marker = "✅" if p.status == ProjectStatus.PUBLISHED else "🗑"
             status_name = "Опубликован" if p.status == ProjectStatus.PUBLISHED else "Удален"
-            p_name = html.escape(p.name)
+            p_name = html.escape(p.name or "Без названия")
             p_cat = html.escape(p.category or "opportunity")
             chain_info = f", {html.escape(p.chain)}" if p.chain else ""
             lines.append(f"{marker} #{p.id} <b>{p_name}</b> ({p_cat}{chain_info}) — {status_name}")
@@ -778,16 +876,24 @@ async def _render_archive_view() -> tuple[str, InlineKeyboardMarkup]:
 
 @router.message(Command("archive"))
 async def on_archive(message: Message):
-    if not _is_admin_message(message):
+    if not await _is_admin_message(message):
         return
-    text, markup = await _render_archive_view()
-    await message.answer(text, reply_markup=markup, parse_mode="HTML")
+    try:
+        text, markup = await _render_archive_view()
+        await message.answer(text, reply_markup=markup, parse_mode="HTML")
+    except Exception as exc:
+        logger.exception("Error rendering archive: %s", exc)
+        try:
+            text, markup = await _render_archive_view()
+            clean_text = re.sub(r"<[^>]+>", "", text)
+            await message.answer(clean_text, reply_markup=markup)
+        except Exception as inner_exc:
+            await message.answer(f"⚠️ Ошибка при открытии архива: {inner_exc}")
 
 
 @router.callback_query(F.data == "archive_refresh")
 async def on_archive_refresh(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
     text, markup = await _render_archive_view()
     if callback.message:
@@ -800,8 +906,7 @@ async def on_archive_refresh(callback: CallbackQuery):
 
 @router.callback_query(F.data == "archive_clear_deleted")
 async def on_archive_clear_deleted(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
 
     cleared_count = 0
@@ -832,8 +937,7 @@ async def on_archive_clear_deleted(callback: CallbackQuery):
 
 @router.callback_query(F.data == "archive_to_review")
 async def on_archive_to_review(callback: CallbackQuery):
-    if not _is_admin_callback(callback):
-        await callback.answer("Нет доступа.", show_alert=True)
+    if not await _is_admin_callback(callback):
         return
     if callback.message:
         await _open_review_queue(callback.message)

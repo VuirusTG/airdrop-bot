@@ -28,14 +28,18 @@ def resolve_image_path(value: str | None) -> Path | None:
     return None
 
 
-def telegram_photo(value: str):
+def telegram_photo(value: str | None) -> FSInputFile | str | None:
+    if not value:
+        return None
     if value.startswith(("https://", "http://")):
         return value
     resolved = resolve_image_path(value)
     if resolved and resolved.is_file():
         return FSInputFile(resolved)
     path = Path(value)
-    return FSInputFile(path) if path.is_file() else value
+    if path.is_file():
+        return FSInputFile(path)
+    return None
 
 
 async def ensure_draft_image(project, draft) -> str | None:

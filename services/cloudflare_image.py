@@ -43,19 +43,19 @@ async def generate_image(prompt: str) -> bytes:
         raise CloudflareImageError("Cloudflare API token или Account ID не настроен")
 
     safe_prompt = (
-        "Create a premium 16:9 cyberpunk crypto editorial artwork for a branded social-media card. "
-        "The final application will place readable typography and information panels over the LEFT side, "
-        "so keep the left 40 percent very dark, clean, low-detail and uncluttered. "
-        "The RIGHT side must contain the main visual: a stylish masked cyber-ninja / shinobi character, "
-        "dynamic three-quarter pose, black tactical clothing, subtle neon-lime accents, high-detail anime-realistic illustration, "
-        "cinematic rim lighting, dramatic fog, glowing futuristic gateway or abstract project energy, holographic grid, "
-        "deep blacks, neon green/lime highlights, premium game-poster quality, strong depth and sharp foreground subject. "
-        f"Project visual brief: {prompt[:1800]}. "
+        "Create a stunning 16:9 cyberpunk crypto editorial artwork for a branded card. "
+        "The left 45 percent of the image MUST be very dark, misty, clean and empty for text overlay. "
+        "The RIGHT side must feature a gorgeous, fierce female cyber-ninja (kunoichi) in three-quarter profile: "
+        "sleek black ponytail with loose strands framing her face, sharp glowing cat-like eyes, black cloth ninja mask "
+        "covering her lower face, high-collar black tactical shinobi stealth suit with subtle neon accents, "
+        "dual katanas strapped to her back, black fingerless combat gloves. "
+        "Behind the female ninja: a magnificent large glowing holographic neon energy circle / portal ring, "
+        "volumetric green mist, reflective wet cyberpunk ground, cinematic lighting, deep blacks, high contrast. "
+        f"Art style and environment variations: {prompt[:1800]}. "
         "Do not render any readable text, words, letters, numbers, captions, UI labels, watermarks, prices, "
-        "logos, brand names, fake interfaces, coins or token symbols. "
-        "A simple abstract geometric emblem in the environment is allowed, but it must not contain letters. "
-        "No extra people. No collage. No split-screen. No white border. Full-bleed 16:9 artwork."
+        "logos, brand names, fake interfaces, coins or token symbols. Single subject. No collage. Full-bleed 16:9."
     )
+
     endpoint = (
         f"{API_BASE}/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/ai/run/"
         f"{settings.CLOUDFLARE_IMAGE_MODEL}"

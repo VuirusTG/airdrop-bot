@@ -194,7 +194,13 @@ async def telegram_webhook(
     # Acknowledge Telegram immediately. Long handlers (especially /scan_now)
     # run in the background; otherwise Telegram retries the same update and
     # the admin receives several identical messages.
-    asyncio.create_task(dp.feed_update(webhook_bot, parsed))
+    async def _safe_feed_update(bot_instance, update_data):
+        try:
+            await dp.feed_update(bot_instance, update_data)
+        except Exception as exc:
+            logger.exception("Error processing webhook update %s: %s", update_data.update_id, exc)
+
+    asyncio.create_task(_safe_feed_update(webhook_bot, parsed))
     return {"ok": True}
 
 
