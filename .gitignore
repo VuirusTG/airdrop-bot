@@ -7,3 +7,5 @@ __pycache__/
 !.env.example
 airdrop_bot.db
 images/generated/
+.agents/
+.windsurfrules
