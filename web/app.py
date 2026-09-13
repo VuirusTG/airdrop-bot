@@ -31,6 +31,7 @@ from services.ai_rework import rework_draft
 from services.fallback_content import fallback_generate_draft
 from services.health import collect_system_health
 from services.llm_draft import DraftResult
+from services.media import ensure_draft_image, resolve_image_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -244,11 +245,18 @@ async def post_image(project_id: int):
         raise HTTPException(404, "Image not found")
     if draft.image_path.startswith(("http://", "https://")):
         return RedirectResponse(draft.image_path)
-    path = Path(draft.image_path)
-    if not path.is_absolute():
-        path = ROOT / path
-    path = path.resolve()
-    if not path.is_file() or ROOT.resolve() not in path.parents:
+    path = resolve_image_path(draft.image_path)
+    if not path or not path.is_file():
+        image_path = await ensure_draft_image(project, draft)
+        if image_path:
+            async with get_session() as session:
+                d = await session.get(Draft, draft.id)
+                if d:
+                    d.image_path = image_path
+                    d.image_source = draft.image_source
+                    await session.commit()
+            path = resolve_image_path(image_path)
+    if not path or not path.is_file():
         raise HTTPException(404, "Image not found")
     return FileResponse(path)
 

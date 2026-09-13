@@ -18,8 +18,13 @@ async def main() -> None:
         source_scanner.configure(bot)
         summary = await source_scanner.scan_once()
         logging.info("Scheduled scanner finished: %s", summary)
-        if summary.get("errors"):
-            raise RuntimeError(f"Scanner completed with {summary['errors']} signal errors")
+        total_processed = (
+            summary.get("sent_for_review", 0)
+            + summary.get("filtered", 0)
+            + summary.get("duplicates", 0)
+        )
+        if summary.get("errors") and total_processed == 0 and summary.get("collected", 0) > 0:
+            raise RuntimeError(f"Scanner completed with {summary['errors']} signal errors and 0 processed")
     finally:
         await bot.session.close()
 

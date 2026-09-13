@@ -54,6 +54,17 @@ EDITORIAL_KEYWORDS = (
     "technical analysis",
 )
 
+ANTI_BOT_PLACEHOLDERS = (
+    "rss reader not yet whitelisted",
+    "instance has been rate limited",
+    "service unavailable",
+    "just a moment",
+    "challenge validation",
+    "access denied",
+    "403 forbidden",
+    "enable javascript",
+)
+
 CURRENT_ACTION_MARKERS = (
     "is live",
     "now live",
@@ -243,6 +254,9 @@ async def _signals_from_feed(feed_url: str, source: str, limit: int = 20) -> lis
         best_link = _best_project_link(entry, link)
         combined_text = f"{title}\n\n{summary}".strip()
         lowered = combined_text.lower()
+
+        if any(marker in lowered for marker in ANTI_BOT_PLACEHOLDERS):
+            continue
 
         # Opportunity-specific feeds are intentionally broad: they are already
         # curated around airdrops/social opportunities, and the AI filter decides

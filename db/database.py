@@ -16,7 +16,13 @@ def _connect_args() -> dict:
     return {}
 from db.models import Base
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False, connect_args=_connect_args())
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=False,
+    connect_args=_connect_args(),
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

@@ -345,7 +345,7 @@ def _render(
     # Tasks panel.
     panel_top = y + 105
     _rounded_panel(draw, (38, panel_top, 685, panel_top + 300), fill=(4, 12, 11), outline=ACCENT, width=2, radius=22)
-    draw.text((68, panel_top - 18), "✦  TASKS TO QUALIFY", fill=ACCENT, font=_font(27, bold=True))
+    draw.text((68, panel_top - 18), "//  TASKS TO QUALIFY", fill=ACCENT, font=_font(27, bold=True))
     step_font = _font(22, bold=True)
     small_font = _font(19, bold=True)
     for index, step in enumerate(_steps(instructions), start=1):

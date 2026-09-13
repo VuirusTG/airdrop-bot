@@ -16,7 +16,7 @@ from publishing.dispatcher import publish_project
 from services.ai_rework import rework_draft
 from services.image_rework import requests_image_rework
 from services.llm_draft import DraftResult
-from services.media import telegram_photo
+from services.media import ensure_draft_image, telegram_photo
 from services.project_image import discover_project_image
 from services.project_link import discover_project_link
 from services.social_card import generate_social_card
@@ -98,42 +98,66 @@ async def _replace_review_message(callback: CallbackQuery, project_id: int) -> N
         if not project or not project.latest_draft():
             return
         draft = project.latest_draft()
+        if draft.image_path:
+            await ensure_draft_image(project, draft)
+            await session.commit()
+
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
         keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
 
         current_has_photo = bool(callback.message.photo)
         desired_has_photo = bool(draft.image_path)
+        caption = _review_caption(project, draft, position, total)
 
-        if desired_has_photo and current_has_photo:
-            await callback.message.edit_media(
-                media=InputMediaPhoto(
-                    media=telegram_photo(draft.image_path),
-                    caption=_review_caption(project, draft, position, total),
-                ),
-                reply_markup=keyboard,
-            )
-            sent = callback.message
-        elif not desired_has_photo and not current_has_photo:
-            await callback.message.edit_text(
-                _review_caption(project, draft, position, total),
-                reply_markup=keyboard,
-            )
-            sent = callback.message
-        else:
-            # Telegram cannot convert a text message into a photo (or vice versa)
-            # with edit_media/edit_text. Replace it atomically from the admin's
-            # perspective and remove the obsolete message.
+        sent = callback.message
+        try:
+            if desired_has_photo and current_has_photo:
+                await callback.message.edit_media(
+                    media=InputMediaPhoto(
+                        media=telegram_photo(draft.image_path),
+                        caption=caption,
+                    ),
+                    reply_markup=keyboard,
+                )
+            elif not desired_has_photo and not current_has_photo:
+                await callback.message.edit_text(
+                    caption,
+                    reply_markup=keyboard,
+                )
+            else:
+                # Type changed between text and photo -> send new, delete old
+                if desired_has_photo:
+                    sent = await callback.bot.send_photo(
+                        chat_id=callback.message.chat.id,
+                        photo=telegram_photo(draft.image_path),
+                        caption=caption,
+                        reply_markup=keyboard,
+                    )
+                else:
+                    sent = await callback.bot.send_message(
+                        chat_id=callback.message.chat.id,
+                        text=caption,
+                        reply_markup=keyboard,
+                    )
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logger.warning("Could not edit review message (%s); replacing: %s", project_id, exc)
             if desired_has_photo:
                 sent = await callback.bot.send_photo(
                     chat_id=callback.message.chat.id,
                     photo=telegram_photo(draft.image_path),
-                    caption=_review_caption(project, draft, position, total),
+                    caption=caption,
                     reply_markup=keyboard,
                 )
             else:
                 sent = await callback.bot.send_message(
                     chat_id=callback.message.chat.id,
-                    text=_review_caption(project, draft, position, total),
+                    text=caption,
                     reply_markup=keyboard,
                 )
             try:
@@ -157,7 +181,8 @@ async def _show_review_project(callback: CallbackQuery, project_id: int) -> bool
             return False
     try:
         await _replace_review_message(callback, project_id)
-    except Exception:
+    except Exception as exc:
+        logger.exception("Could not show review project #%s: %s", project_id, exc)
         return False
     return True
 
@@ -173,6 +198,10 @@ async def _open_review_queue(message: Message) -> None:
         if not draft:
             await message.answer("В очереди найден проект без черновика.")
             return
+        if draft.image_path:
+            await ensure_draft_image(project, draft)
+            await session.commit()
+
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
         keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
         caption = _review_caption(project, draft, position, total)
