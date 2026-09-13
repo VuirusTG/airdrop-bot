@@ -24,7 +24,7 @@ TEMPLATE_PATH = ROOT / "images" / "brand" / "ninja-female-template.png"
 
 WIDTH = 1024
 HEIGHT = 682
-CARD_STYLE_VERSION = "ninja-scout-cyber-v7"
+CARD_STYLE_VERSION = "ninja-scout-cyber-v8"
 
 URL_RE = re.compile(r"https?://[^\s)\]}>,]+", re.IGNORECASE)
 HEADLINE_WORDS = re.compile(
@@ -163,81 +163,200 @@ def _draw_shuriken(draw: ImageDraw.ImageDraw, center: tuple[int, int], radius: i
     draw.ellipse((cx - hole_r, cy - hole_r, cx + hole_r, cy + hole_r), fill=(10, 15, 12))
 
 
-def _draw_globe_icon(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], fill=COLOR_WHITE):
-    """Clean wireframe globe with longitude and latitude lines (Step 1)."""
-    x0, y0, x1, y1 = box
-    cx = (x0 + x1) // 2
-    cy = (y0 + y1) // 2
-    r = (x1 - x0) // 2
-    draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=fill, width=2)
-    draw.ellipse((cx - r // 2, cy - r, cx + r // 2, cy + r), outline=fill, width=1)
-    draw.line([(cx, cy - r), (cx, cy + r)], fill=fill, width=1)
-    draw.line([(cx - r, cy), (cx + r, cy)], fill=fill, width=1)
-    lat_offset = int(r * 0.5)
-    lat_w = int(math.sqrt(max(0, r * r - lat_offset * lat_offset)))
-    draw.line([(cx - lat_w, cy - lat_offset), (cx + lat_w, cy - lat_offset)], fill=fill, width=1)
-    draw.line([(cx - lat_w, cy + lat_offset), (cx + lat_w, cy + lat_offset)], fill=fill, width=1)
+def _render_supersampled(draw_fn, size: int = 32, scale: int = 4, **kwargs) -> Image.Image:
+    large_size = size * scale
+    img = Image.new("RGBA", (large_size, large_size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw_fn(draw, large_size, **kwargs)
+    return img.resize((size, size), Image.Resampling.LANCZOS)
 
 
-def _draw_check_icon(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], fill=COLOR_WHITE):
-    """Circle with checkmark inside (Step 2)."""
-    x0, y0, x1, y1 = box
-    cx = (x0 + x1) // 2
-    cy = (y0 + y1) // 2
-    r = (x1 - x0) // 2
-    draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=fill, width=2)
+def _draw_globe_hires(draw: ImageDraw.ImageDraw, s: int, color=(245, 248, 245, 255)):
+    """Crisp wireframe globe with latitude and longitude lines (Step 1)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.44)
+    w = max(2, int(s * 0.055))
+    w_thin = max(1, int(s * 0.038))
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=w)
+    draw.line([(cx, cy - r), (cx, cy + r)], fill=color, width=w_thin)
+    draw.ellipse((cx - int(r * 0.5), cy - r, cx + int(r * 0.5), cy + r), outline=color, width=w_thin)
+    draw.line([(cx - r, cy), (cx + r, cy)], fill=color, width=w_thin)
+    lat_off = int(r * 0.5)
+    lat_w = int(math.sqrt(max(0, r * r - lat_off * lat_off)))
+    draw.line([(cx - lat_w, cy - lat_off), (cx + lat_w, cy - lat_off)], fill=color, width=w_thin)
+    draw.line([(cx - lat_w, cy + lat_off), (cx + lat_w, cy + lat_off)], fill=color, width=w_thin)
+
+
+def _draw_check_hires(draw: ImageDraw.ImageDraw, s: int, color=(245, 248, 245, 255)):
+    """Crisp circle with checkmark inside (Step 2)."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.44)
+    w = max(2, int(s * 0.055))
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=w)
     pts = [
-        (cx - int(r * 0.45), cy),
-        (cx - int(r * 0.1), cy + int(r * 0.4)),
-        (cx + int(r * 0.45), cy - int(r * 0.35)),
+        (cx - int(r * 0.48), cy + int(r * 0.02)),
+        (cx - int(r * 0.12), cy + int(r * 0.40)),
+        (cx + int(r * 0.46), cy - int(r * 0.36)),
     ]
-    draw.line(pts, fill=fill, width=2)
+    draw.line(pts, fill=color, width=int(s * 0.075), joint="curve")
 
 
-def _draw_paper_plane(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], fill=COLOR_WHITE):
-    """Clean origami paper airplane pointing up-right without circle (Step 3)."""
-    x0, y0, x1, y1 = box
-    w = x1 - x0
-    h = y1 - y0
-    nose = (x1, y0)
-    left_wing = (x0, y0 + int(h * 0.65))
-    bottom_notch = (x0 + int(w * 0.4), y1)
-    center_fold = (x0 + int(w * 0.55), y0 + int(h * 0.55))
+def _draw_origami_plane_hires(draw: ImageDraw.ImageDraw, s: int, color=(245, 248, 245, 255)):
+    """Crisp origami paper airplane pointing up-right with inverted V-notch matching Photo 2 (Step 3)."""
+    w = max(2, int(s * 0.065))
+    nose = (int(s * 0.82), int(s * 0.16))
+    left_tip = (int(s * 0.14), int(s * 0.48))
+    left_tail = (int(s * 0.40), int(s * 0.86))
+    center_notch = (int(s * 0.47), int(s * 0.62))
+    right_tail = (int(s * 0.70), int(s * 0.86))
 
-    draw.polygon([nose, left_wing, center_fold], outline=fill, fill=(255, 255, 255, 40))
-    draw.polygon([nose, center_fold, bottom_notch], outline=fill, fill=(255, 255, 255, 90))
-    draw.line([nose, bottom_notch], fill=fill, width=2)
+    pts = [nose, left_tip, left_tail, center_notch, right_tail, nose]
+    draw.line(pts, fill=color, width=w, joint="curve")
+    draw.line([nose, center_notch], fill=color, width=w)
 
 
-def _draw_eth_3d_diamond(draw: ImageDraw.ImageDraw, center: tuple[int, int], size: int = 36):
+def _get_official_x_icon(size: int = 18, color=(245, 248, 245)) -> Image.Image:
+    """Official Twitter/X mathematical double-struck mark."""
+    s = size * 4
+    sc = s / 24.0
+    mask = Image.new("L", (s, s), 0)
+    mdraw = ImageDraw.Draw(mask)
+    outer = [
+        (18.244 * sc, 2.25 * sc),
+        (21.552 * sc, 2.25 * sc),
+        (14.325 * sc, 10.51 * sc),
+        (22.827 * sc, 21.75 * sc),
+        (16.170 * sc, 21.75 * sc),
+        (10.956 * sc, 14.933 * sc),
+        (4.990 * sc, 21.75 * sc),
+        (1.680 * sc, 21.75 * sc),
+        (9.410 * sc, 12.915 * sc),
+        (1.254 * sc, 2.25 * sc),
+        (8.080 * sc, 2.25 * sc),
+        (12.793 * sc, 8.481 * sc),
+    ]
+    mdraw.polygon(outer, fill=255)
+    inner = [
+        (17.083 * sc, 19.77 * sc),
+        (18.916 * sc, 19.77 * sc),
+        (7.084 * sc, 4.126 * sc),
+        (5.117 * sc, 4.126 * sc),
+    ]
+    mdraw.polygon(inner, fill=0)
+    x_img = Image.new("RGBA", (s, s), (*color, 255))
+    x_img.putalpha(mask)
+    return x_img.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def _get_official_tg_icon(size: int = 18) -> Image.Image:
+    """Official Telegram circular blue badge with flying paper airplane silhouette."""
+    s = size * 4
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.46)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(36, 161, 222, 255))
+    sc = (s * 0.58) / 24.0
+    ox = cx - int(12 * sc) - int(s * 0.02)
+    oy = cy - int(12 * sc)
+
+    body = [
+        (ox + 21.0 * sc, oy + 3.8 * sc),
+        (ox + 3.2 * sc, oy + 10.8 * sc),
+        (ox + 8.2 * sc, oy + 13.2 * sc),
+        (ox + 18.0 * sc, oy + 6.8 * sc),
+    ]
+    draw.polygon(body, fill=(255, 255, 255, 255))
+
+    flap = [
+        (ox + 8.2 * sc, oy + 13.2 * sc),
+        (ox + 10.2 * sc, oy + 18.8 * sc),
+        (ox + 13.2 * sc, oy + 15.8 * sc),
+    ]
+    draw.polygon(flap, fill=(210, 235, 250, 255))
+
+    fold = [
+        (ox + 21.0 * sc, oy + 3.8 * sc),
+        (ox + 8.2 * sc, oy + 13.2 * sc),
+        (ox + 13.2 * sc, oy + 15.8 * sc),
+        (ox + 19.2 * sc, oy + 17.5 * sc),
+    ]
+    draw.polygon(fold, fill=(255, 255, 255, 255))
+    return img.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def _draw_eth_3d_hires(draw: ImageDraw.ImageDraw, s: int):
     """Faceted 3D shaded Ethereum polygon diamond matching Photo 2."""
-    cx, cy = center
-    hw = size // 2
-    hh_top = int(size * 0.62)
-    hh_bot = int(size * 0.42)
-    gap = 2
+    cx, cy = s // 2, s // 2
+    hw = int(s * 0.38)
+    hh_top = int(s * 0.46)
+    hh_bot = int(s * 0.36)
+    gap = max(1, int(s * 0.03))
 
     top_v = (cx, cy - hh_top)
     mid_l = (cx - hw, cy - gap)
     mid_r = (cx + hw, cy - gap)
     mid_c = (cx, cy - gap)
-
-    draw.polygon([top_v, mid_l, mid_c], fill=(245, 250, 248))
-    draw.polygon([top_v, mid_r, mid_c], fill=(160, 175, 170))
+    draw.polygon([top_v, mid_l, mid_c], fill=(250, 255, 252, 255))
+    draw.polygon([top_v, mid_r, mid_c], fill=(165, 185, 175, 255))
 
     bot_v = (cx, cy + hh_bot)
     bot_mid_l = (cx - hw, cy + gap)
     bot_mid_r = (cx + hw, cy + gap)
     bot_mid_c = (cx, cy + gap)
+    draw.polygon([bot_mid_c, bot_mid_l, bot_v], fill=(205, 225, 215, 255))
+    draw.polygon([bot_mid_c, bot_mid_r, bot_v], fill=(130, 150, 140, 255))
 
-    draw.polygon([bot_mid_c, bot_mid_l, bot_v], fill=(200, 215, 210))
-    draw.polygon([bot_mid_c, bot_mid_r, bot_v], fill=(125, 140, 135))
+
+def _draw_solana_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Solana 3-bar gradient logo."""
+    cx, cy = s // 2, s // 2
+    w = int(s * 0.72)
+    h = int(s * 0.16)
+    skew = int(s * 0.16)
+    y1 = int(s * 0.22)
+    draw.polygon([(cx - w//2 + skew, y1), (cx + w//2, y1), (cx + w//2 - skew, y1 + h), (cx - w//2, y1 + h)], fill=(0, 255, 163, 255))
+    y2 = int(s * 0.44)
+    draw.polygon([(cx + w//2 - skew, y2), (cx - w//2, y2), (cx - w//2 + skew, y2 + h), (cx + w//2, y2 + h)], fill=(3, 225, 255, 255))
+    y3 = int(s * 0.66)
+    draw.polygon([(cx - w//2 + skew, y3), (cx + w//2, y3), (cx + w//2 - skew, y3 + h), (cx - w//2, y3 + h)], fill=(220, 31, 255, 255))
 
 
-def _draw_x_logo(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], fill=COLOR_WHITE):
-    x0, y0, x1, y1 = box
-    draw.line([(x0, y0), (x1, y1)], fill=fill, width=2)
-    draw.line([(x1, y0), (x0, y1)], fill=fill, width=2)
+def _draw_bnb_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official BNB diamond cross logo in gold."""
+    cx, cy = s // 2, s // 2
+    gold = (243, 186, 47, 255)
+    cd = int(s * 0.16)
+    draw.polygon([(cx, cy - cd), (cx + cd, cy), (cx, cy + cd), (cx - cd, cy)], fill=gold)
+    dist = int(s * 0.32)
+    sd = int(s * 0.12)
+    draw.polygon([(cx, cy - dist - sd), (cx + sd, cy - dist), (cx, cy - dist + sd), (cx - sd, cy - dist)], fill=gold)
+    draw.polygon([(cx, cy + dist - sd), (cx + sd, cy + dist), (cx, cy + dist + sd), (cx - sd, cy + dist)], fill=gold)
+    draw.polygon([(cx - dist, cy - sd), (cx - dist + sd, cy), (cx - dist, cy + sd), (cx - dist - sd, cy)], fill=gold)
+    draw.polygon([(cx + dist, cy - sd), (cx + dist + sd, cy), (cx + dist, cy + sd), (cx + dist - sd, cy)], fill=gold)
+
+
+def _draw_btc_hires(draw: ImageDraw.ImageDraw, s: int):
+    """Official Bitcoin ₿ logo in gold token."""
+    cx, cy = s // 2, s // 2
+    r = int(s * 0.44)
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(247, 147, 26, 255))
+    font = _get_font("arialbd.ttf", int(s * 0.55))
+    draw.text((cx, cy - int(s * 0.02)), "₿", fill=(255, 255, 255, 255), font=font, anchor="mm")
+
+
+def _get_chain_icon(chain: str | None, size: int = 36) -> Image.Image:
+    """Dynamically return the matching high-resolution chain icon."""
+    c = (chain or "").upper().strip()
+    if any(k in c for k in ["SOL", "SOLANA"]):
+        return _render_supersampled(_draw_solana_hires, size=size)
+    elif any(k in c for k in ["BNB", "BSC", "BINANCE"]):
+        return _render_supersampled(_draw_bnb_hires, size=size)
+    elif any(k in c for k in ["BTC", "BITCOIN", "RUNES", "BRC"]):
+        return _render_supersampled(_draw_btc_hires, size=size)
+    else:
+        # Default: Ethereum / EVM 3D diamond
+        return _render_supersampled(_draw_eth_3d_hires, size=size)
 
 
 def _draw_arrow(draw: ImageDraw.ImageDraw, x: int, y: int, size: int = 10, fill=COLOR_LIME):
@@ -310,15 +429,15 @@ def _render(
     else:
         canvas = Image.new("RGBA", (WIDTH, HEIGHT), (6, 10, 8, 255))
 
-    # Clean left HUD with rich black background
+    # Soft ambient vignette for HUD area (subtle gradient, not hard solid black)
     hud_overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     hud_draw = ImageDraw.Draw(hud_overlay)
     for x in range(480):
-        if x < 410:
-            alpha = 248
+        if x < 350:
+            alpha = 85
         else:
-            alpha = int(248 * (1.0 - (x - 410) / 70))
-        hud_draw.line([(x, 0), (x, HEIGHT)], fill=(6, 10, 8, max(0, min(255, alpha))))
+            alpha = int(85 * (1.0 - (x - 350) / 130))
+        hud_draw.line([(x, 0), (x, HEIGHT)], fill=(4, 8, 6, max(0, min(255, alpha))))
     canvas = Image.alpha_composite(canvas, hud_overlay)
     draw = ImageDraw.Draw(canvas)
 
@@ -363,27 +482,37 @@ def _render(
     draw.rounded_rectangle((32, box_top, 32 + box_w, box_top + box_h), radius=16, outline=accent, width=2, fill=(8, 14, 10, 230))
 
     step_font_bold = _get_font("arialbd.ttf", 15)
-    font_pill = _get_font("arialbd.ttf", 16)
+    font_pill = _get_font("arialbd.ttf", 18)
     steps_list = _steps(instructions)
 
-    for idx, (line1, line2) in enumerate(steps_list[:3], start=1):
-        cy = box_top + 18 + (idx - 1) * 62
-        # Number pill 01, 02, 03
-        draw.rounded_rectangle((48, cy, 48 + 44, cy + 38), radius=8, fill=accent)
-        draw.text((58, cy + 9), f"0{idx}", fill=(6, 10, 8), font=font_pill)
+    # Pre-render step icons with supersampling
+    ic_globe = _render_supersampled(_draw_globe_hires, size=28)
+    ic_check = _render_supersampled(_draw_check_hires, size=28)
+    ic_plane = _render_supersampled(_draw_origami_plane_hires, size=28)
 
-        # Icons
-        ic_box = (112, cy + 5, 140, cy + 33)
+    for idx, (line1, line2) in enumerate(steps_list[:3], start=1):
+        cy = box_top + 16 + (idx - 1) * 62
+        # Number pill 01, 02, 03: 42x42 square-ish rounded pill
+        px0, py0 = 48, cy
+        px1, py1 = 48 + 42, cy + 42
+        draw.rounded_rectangle((px0, py0, px1, py1), radius=6, fill=accent)
+        # PERFECT CENTERING via anchor="mm"
+        cx_pill = (px0 + px1) / 2
+        cy_pill = (py0 + py1) / 2
+        draw.text((cx_pill, cy_pill), f"0{idx}", fill=(6, 10, 8), font=font_pill, anchor="mm")
+
+        # Step Icon
         if idx == 1:
-            _draw_globe_icon(draw, ic_box, fill=COLOR_WHITE)
+            ic = ic_globe
         elif idx == 2:
-            _draw_check_icon(draw, ic_box, fill=COLOR_WHITE)
+            ic = ic_check
         else:
-            _draw_paper_plane(draw, ic_box, fill=COLOR_WHITE)
+            ic = ic_plane
+        canvas.paste(ic, (110, cy + 7), ic)
 
         # Two lines of step text
-        draw.text((156, cy + 2), line1.upper()[:24], fill=COLOR_WHITE, font=step_font_bold)
-        draw.text((156, cy + 20), line2.upper()[:26], fill=accent, font=step_font_bold)
+        draw.text((156, cy + 3), line1.upper()[:24], fill=COLOR_WHITE, font=step_font_bold)
+        draw.text((156, cy + 22), line2.upper()[:26], fill=accent, font=step_font_bold)
 
     # 5. Stats Box: POTENTIAL REWARDS & NETWORK
     stats_top = box_top + box_h + 14
@@ -400,11 +529,14 @@ def _render(
     draw.text((48, stats_top + 32), reward_val, fill=accent, font=font_rew)
 
     # Right: NETWORK
-    draw.text((245, stats_top + 12), "NETWORK", fill=COLOR_MUTED, font=font_lbl)
+    draw.text((248, stats_top + 12), "NETWORK", fill=COLOR_MUTED, font=font_lbl)
     net_name = _ascii_display(chain or "ETHEREUM").upper()[:10]
-    font_net = _get_font("arialbd.ttf", 20)
-    draw.text((245, stats_top + 38), net_name, fill=accent, font=font_net)
-    _draw_eth_3d_diamond(draw, (390, stats_top + 48), size=36)
+    font_net = _get_font("arialbd.ttf", 20 if len(net_name) <= 8 else 17)
+    draw.text((248, stats_top + 40), net_name, fill=accent, font=font_net)
+    
+    # Dynamic Chain Icon
+    chain_ic = _get_chain_icon(chain, size=36)
+    canvas.paste(chain_ic, (384, stats_top + 28), chain_ic)
 
     # 6. Bottom Social Bar
     # 𝕏 @JanjezCrypto    ✈️ @janjezcrypto    |    LINK IN BIO ↗
@@ -412,22 +544,28 @@ def _render(
     bbar_h = 36
     draw.rounded_rectangle((32, bbar_top, 32 + box_w, bbar_top + bbar_h), radius=8, outline=accent_dark, width=2, fill=(6, 12, 8, 235))
     bbar_font = _get_font("arialbd.ttf", 13)
-    _draw_x_logo(draw, (47, bbar_top + 11, 59, bbar_top + 23), fill=COLOR_WHITE)
-    draw.text((66, bbar_top + 9), "@JanjezCrypto", fill=COLOR_WHITE, font=bbar_font)
 
-    _draw_paper_plane(draw, (178, bbar_top + 10, 192, bbar_top + 24), fill=COLOR_WHITE)
-    draw.text((198, bbar_top + 9), "@janjezcrypto", fill=COLOR_WHITE, font=bbar_font)
+    # Authentic 𝕏 logo
+    x_ic = _get_official_x_icon(size=16)
+    canvas.paste(x_ic, (48, bbar_top + 10), x_ic)
+    draw.text((70, bbar_top + 9), "@JanjezCrypto", fill=COLOR_WHITE, font=bbar_font)
 
-    draw.line([(305, bbar_top + 8), (305, bbar_top + bbar_h - 8)], fill=accent_dark, width=1)
-    draw.text((318, bbar_top + 9), "LINK IN BIO", fill=accent, font=bbar_font)
-    _draw_arrow(draw, 400, bbar_top + 13, size=9, fill=accent)
+    # Authentic Telegram logo
+    tg_ic = _get_official_tg_icon(size=18)
+    canvas.paste(tg_ic, (180, bbar_top + 9), tg_ic)
+    draw.text((204, bbar_top + 9), "@janjezcrypto", fill=COLOR_WHITE, font=bbar_font)
+
+    # Link in bio
+    draw.line([(308, bbar_top + 8), (308, bbar_top + bbar_h - 8)], fill=accent_dark, width=1)
+    draw.text((320, bbar_top + 9), "LINK IN BIO", fill=accent, font=bbar_font)
+    _draw_arrow(draw, 402, bbar_top + 13, size=9, fill=accent)
 
     # 7. Bottom-Right Callout Badge: EARLY USERS / GET THE EDGE
-    callout_w = 180
+    callout_w = 186
     callout_h = 54
-    callout_x = 808
-    callout_y = 582
-    draw.rounded_rectangle((callout_x, callout_y, callout_x + callout_w, callout_y + callout_h), radius=10, outline=accent, width=2, fill=(6, 12, 8, 235))
+    callout_x = 804
+    callout_y = 596
+    draw.rounded_rectangle((callout_x, callout_y, callout_x + callout_w, callout_y + callout_h), radius=10, outline=accent, width=2, fill=(8, 12, 10, 255))
     _draw_shuriken(draw, (callout_x + 24, callout_y + 27), radius=13, fill=accent)
     draw.text((callout_x + 48, callout_y + 10), "EARLY USERS", fill=COLOR_WHITE, font=_get_font("arialbd.ttf", 12))
     draw.text((callout_x + 48, callout_y + 27), "GET THE EDGE", fill=accent, font=_get_font("arialbd.ttf", 14))
