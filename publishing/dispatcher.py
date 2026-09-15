@@ -1,4 +1,4 @@
-"""Publish approved Telegram posts and record manual X copy readiness."""
+import logging
 from dataclasses import dataclass
 
 from aiogram import Bot
@@ -8,7 +8,9 @@ from db.database import get_session
 from db.models import Draft, Project, PublishedPost
 from publishing.instagram import InstagramNotReady, publish_to_instagram
 from publishing.x import XPublishError, publish_to_x
-from services.media import telegram_photo
+from services.media import ensure_draft_image, telegram_photo
+
+logger = logging.getLogger(__name__)
 
 
 TELEGRAM_CAPTION_LIMIT = 1024
@@ -67,27 +69,45 @@ def _telegram_photo_caption(draft: Draft) -> str:
     return f"{body}\n\n{link}" if link else body
 
 
-async def _publish_telegram(bot: Bot, draft: Draft) -> PublishResult:
+async def _publish_telegram(bot: Bot, project: Project, draft: Draft) -> PublishResult:
     text = draft.rendered_text()
     try:
-        if draft.image_path:
+        # Ensure image exists or regenerate it if missing from ephemeral container storage
+        if draft.image_path or settings.ENABLE_SOCIAL_CARD_GENERATION:
+            try:
+                await ensure_draft_image(project, draft)
+            except Exception as exc:
+                logger.warning("Could not ensure draft image for %s: %s", project.name, exc)
+
+        photo_input = telegram_photo(draft.image_path) if draft.image_path else None
+
+        if photo_input is not None:
             try:
                 message = await bot.send_photo(
                     chat_id=settings.PUBLISH_CHANNEL_ID,
-                    photo=telegram_photo(draft.image_path),
+                    photo=photo_input,
                     caption=_telegram_photo_caption(draft),
                 )
             except Exception as exc:
-                return PublishResult(
-                    platform="telegram",
-                    success=False,
-                    error=f"Telegram не смог опубликовать фото вместе с постом: {exc}",
-                )
+                logger.warning("Telegram send_photo failed for %s (%s). Falling back to text post. Error: %s", project.name, draft.image_path, exc)
+                try:
+                    message = await bot.send_message(
+                        chat_id=settings.PUBLISH_CHANNEL_ID,
+                        text=text,
+                    )
+                except Exception as text_exc:
+                    return PublishResult(
+                        platform="telegram",
+                        success=False,
+                        error=f"Ошибка публикации в Telegram: {exc} | fallback: {text_exc}",
+                    )
         else:
+            # Clean formatted text post if no photo is available or resolvable
             message = await bot.send_message(
                 chat_id=settings.PUBLISH_CHANNEL_ID,
                 text=text,
             )
+
         return PublishResult(
             platform="telegram",
             success=True,
@@ -132,7 +152,7 @@ async def _publish_instagram(draft: Draft) -> PublishResult:
 
 
 async def publish_project(bot: Bot, project: Project, draft: Draft) -> list[PublishResult]:
-    results = [await _publish_telegram(bot, draft), await _publish_x(draft)]
+    results = [await _publish_telegram(bot, project, draft), await _publish_x(draft)]
     if settings.INSTAGRAM_ACCESS_TOKEN and settings.INSTAGRAM_BUSINESS_ACCOUNT_ID:
         results.append(await _publish_instagram(draft))
 

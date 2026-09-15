@@ -162,8 +162,9 @@ async def _replace_review_message(callback: CallbackQuery, project_id: int) -> N
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
         keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
 
+        photo_obj = telegram_photo(draft.image_path) if draft.image_path else None
         current_has_photo = bool(callback.message.photo)
-        desired_has_photo = bool(draft.image_path)
+        desired_has_photo = photo_obj is not None
         caption = _review_caption(project, draft, position, total)
 
         sent = callback.message
@@ -171,7 +172,7 @@ async def _replace_review_message(callback: CallbackQuery, project_id: int) -> N
             if desired_has_photo and current_has_photo:
                 await callback.message.edit_media(
                     media=InputMediaPhoto(
-                        media=telegram_photo(draft.image_path),
+                        media=photo_obj,
                         caption=caption,
                     ),
                     reply_markup=keyboard,
@@ -186,7 +187,7 @@ async def _replace_review_message(callback: CallbackQuery, project_id: int) -> N
                 if desired_has_photo:
                     sent = await callback.bot.send_photo(
                         chat_id=callback.message.chat.id,
-                        photo=telegram_photo(draft.image_path),
+                        photo=photo_obj,
                         caption=caption,
                         reply_markup=keyboard,
                     )
@@ -207,7 +208,7 @@ async def _replace_review_message(callback: CallbackQuery, project_id: int) -> N
             if desired_has_photo:
                 sent = await callback.bot.send_photo(
                     chat_id=callback.message.chat.id,
-                    photo=telegram_photo(draft.image_path),
+                    photo=photo_obj,
                     caption=caption,
                     reply_markup=keyboard,
                 )
@@ -416,8 +417,14 @@ async def on_approve(callback: CallbackQuery):
             return
 
         latest_draft = project.latest_draft()
-        twitter_text = latest_draft.twitter_text
-        image_path = latest_draft.image_path
+        if latest_draft and (latest_draft.image_path or settings.ENABLE_SOCIAL_CARD_GENERATION):
+            try:
+                await ensure_draft_image(project, latest_draft)
+                await session.commit()
+            except Exception as exc:
+                logger.warning("ensure_draft_image failed on approve for project #%s: %s", project.id, exc)
+        twitter_text = latest_draft.twitter_text if latest_draft else None
+        image_path = latest_draft.image_path if latest_draft else None
 
         project.status = ProjectStatus.APPROVED
         await session.commit()
@@ -453,9 +460,8 @@ async def on_approve(callback: CallbackQuery):
                 f"{tw_text}\n\n"
                 "👆 Сохраните фото выше и нажмите кнопку ниже, чтобы открыть Twitter с готовым текстом."
             )
-            if len(tw_caption) > 1024:
-                tw_caption = tw_text[:1020].rsplit(" ", 1)[0] + "…"
-            photo_to_send = telegram_photo(image_path) if image_path else None
+            curr_img = latest_draft.image_path if latest_draft else image_path
+            photo_to_send = telegram_photo(curr_img) if curr_img else None
             if photo_to_send:
                 try:
                     await callback.bot.send_photo(

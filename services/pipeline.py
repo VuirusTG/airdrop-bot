@@ -18,7 +18,7 @@ from services.groq_provider import generate_draft as generate_groq_draft
 from services.groq_provider import score_project as score_groq_project
 from services.llm_draft import generate_draft
 from services.llm_filter import score_project
-from services.media import telegram_photo
+from services.media import ensure_draft_image, telegram_photo
 from services.project_image import discover_project_image
 from services.project_link import discover_project_link
 from services.social_card import generate_social_card
@@ -225,9 +225,16 @@ async def process_raw_signal(
         # webhook delivery and makes Previous/Next edit a single stable message.
         if draft.image_path:
             try:
+                await ensure_draft_image(project, draft)
+            except Exception:
+                pass
+
+        photo_input = telegram_photo(draft.image_path) if draft.image_path else None
+        if photo_input is not None:
+            try:
                 message = await bot.send_photo(
                     chat_id=settings.ADMIN_USER_ID,
-                    photo=telegram_photo(draft.image_path),
+                    photo=photo_input,
                     caption=_review_caption(project, draft),
                     reply_markup=review_keyboard(project.id),
                 )

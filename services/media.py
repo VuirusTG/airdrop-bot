@@ -44,14 +44,15 @@ def telegram_photo(value: str | None) -> FSInputFile | str | None:
 
 async def ensure_draft_image(project, draft) -> str | None:
     """Ensure that the draft image exists on disk or as a URL, regenerating if missing."""
-    if not draft:
+    if not draft or not project:
         return None
     if draft.image_path and draft.image_path.startswith(("http://", "https://")):
         return draft.image_path
 
-    resolved = resolve_image_path(draft.image_path)
-    if resolved and resolved.is_file():
-        return str(resolved)
+    if draft.image_path:
+        resolved = resolve_image_path(draft.image_path)
+        if resolved and resolved.is_file():
+            return str(resolved)
 
     # Missing on disk (e.g. after container restart or generated in GitHub Actions)
     # Regenerate deterministic social card on demand.
@@ -64,16 +65,16 @@ async def ensure_draft_image(project, draft) -> str | None:
             chain=project.chain,
             instructions=draft.instructions,
             official_image_url=None,
-            image_prompt=draft.image_prompt,
-            project_url=draft.project_url or project.project_url,
-            generation_key=f"project-{project.id}-v{draft.version}",
-            potential_reward=draft.potential_reward,
+            image_prompt=getattr(draft, "image_prompt", None),
+            project_url=getattr(draft, "project_url", None) or getattr(project, "project_url", None),
+            generation_key=f"project-{project.id}-v{getattr(draft, 'version', 1)}" if getattr(project, "id", None) else "initial",
+            potential_reward=getattr(draft, "potential_reward", None),
         )
-        if card and card.path:
+        if card and card.path and Path(card.path).is_file():
             draft.image_path = card.path
             draft.image_source = card.source
             return card.path
     except Exception as exc:
-        logger.warning("Could not regenerate missing draft image for %s: %s", project.name, exc)
+        logger.warning("Could not regenerate missing draft image for %s: %s", getattr(project, "name", "unknown"), exc)
 
-    return draft.image_path
+    return None
