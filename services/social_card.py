@@ -37,6 +37,15 @@ COLOR_LIME = (166, 255, 0)         # #A6FF00 bright neon lime
 COLOR_WHITE = (245, 248, 245)
 COLOR_MUTED = (140, 160, 150)
 
+THEME_COLORS: dict[str, tuple[int, int, int]] = {
+    "lime": (166, 255, 0),      # Neon lime (default)
+    "cyan": (0, 220, 255),      # Cyber cyan
+    "violet": (215, 75, 255),   # Cyber violet
+    "gold": (255, 205, 10),     # Cyber gold
+    "red": (255, 55, 75),       # Crimson red
+    "orange": (255, 130, 10),   # Neon orange
+}
+
 
 @dataclass(frozen=True)
 class SocialCard:
@@ -656,32 +665,41 @@ def _draw_arrow(draw: ImageDraw.ImageDraw, x: int, y: int, size: int = 10, fill=
     draw.line([(x + size, y), (x + size, y + 6)], fill=fill, width=2)
 
 
-def _transform_artwork(img: Image.Image, prompt_or_feedback: str | None) -> tuple[Image.Image, tuple[int, int, int]]:
-    """Transform master template hue, brightness, and contrast based on feedback or cycle.
+def _transform_artwork(
+    img: Image.Image,
+    prompt_or_feedback: str | None,
+    theme_color: str | None = None,
+) -> tuple[Image.Image, tuple[int, int, int]]:
+    """Transform master template hue, brightness, and contrast based on feedback, theme, or cycle.
     Returns the transformed image and the matching accent color for the HUD.
     """
     fb = (prompt_or_feedback or "").lower()
     target_hue = None
     accent = COLOR_LIME
 
-    if any(w in fb for w in ["син", "голуб", "blue", "cyan", "лазур", "azure"]):
+    if theme_color and theme_color.lower() in THEME_COLORS:
+        tc = theme_color.lower()
+        accent = THEME_COLORS[tc]
+        hue_map = {"cyan": 205, "violet": 285, "red": 355, "gold": 45, "orange": 25, "lime": 85}
+        target_hue = hue_map.get(tc)
+    elif any(w in fb for w in ["син", "голуб", "blue", "cyan", "лазур", "azure"]):
         target_hue = 205
-        accent = (0, 220, 255)      # Cyber cyan
+        accent = THEME_COLORS["cyan"]
     elif any(w in fb for w in ["фиолетов", "пурпур", "purple", "violet", "magenta"]):
         target_hue = 285
-        accent = (215, 75, 255)     # Cyber violet
+        accent = THEME_COLORS["violet"]
     elif any(w in fb for w in ["красн", "red", "crimson", "алый"]):
         target_hue = 355
-        accent = (255, 55, 75)      # Cyber red
+        accent = THEME_COLORS["red"]
     elif any(w in fb for w in ["желт", "золот", "gold", "yellow", "янтарь", "amber"]):
         target_hue = 45
-        accent = (255, 205, 10)     # Cyber gold
+        accent = THEME_COLORS["gold"]
     elif any(w in fb for w in ["оранж", "orange"]):
         target_hue = 25
-        accent = (255, 130, 10)     # Cyber orange
+        accent = THEME_COLORS["orange"]
     elif any(w in fb for w in ["розов", "pink"]):
         target_hue = 320
-        accent = (255, 90, 190)     # Cyber pink
+        accent = (255, 90, 190)
 
     out = img.copy().convert("RGB")
     if target_hue is not None and abs(target_hue - 85) > 10:
@@ -712,9 +730,13 @@ def _render(
     artwork: Image.Image | None,
     accent: tuple[int, int, int],
     project_url: str | None,
+    custom_steps: list[str] | None = None,
 ) -> None:
     if artwork is not None:
-        canvas = artwork.convert("RGBA")
+        if artwork.size != (WIDTH, HEIGHT):
+            canvas = ImageOps.fit(artwork, (WIDTH, HEIGHT), method=Image.Resampling.LANCZOS).convert("RGBA")
+        else:
+            canvas = artwork.convert("RGBA")
     elif TEMPLATE_PATH.is_file():
         canvas = Image.open(TEMPLATE_PATH).convert("RGBA")
     else:
@@ -774,7 +796,23 @@ def _render(
 
     step_font_bold = _get_font("arialbd.ttf", 15)
     font_pill = _get_font("arialbd.ttf", 18)
-    steps_list = _steps(instructions)
+    if custom_steps:
+        steps_list = []
+        for step in custom_steps:
+            cleaned = re.sub(r"^\d+[.)]\s*", "", step).strip()
+            if cleaned:
+                l1, l2 = _format_step_lines(cleaned)
+                if l1:
+                    steps_list.append((l1, l2))
+        while len(steps_list) < 3:
+            defaults = [
+                ("VISIT THE OFFICIAL", "PROJECT PAGE"),
+                ("COMPLETE TASKS", "& FOLLOW RULES"),
+                ("JOIN COMMUNITY", "& STAY ACTIVE"),
+            ]
+            steps_list.append(defaults[len(steps_list)])
+    else:
+        steps_list = _steps(instructions)
 
     # Pre-render step icons with supersampling
     ic_globe = _render_supersampled(_draw_globe_hires, size=28)
@@ -876,28 +914,35 @@ async def generate_social_card(
     project_url: str | None = None,
     generation_key: str | None = None,
     potential_reward: str | None = None,
+    custom_artwork_path: str | None = None,
+    theme_color: str | None = None,
+    custom_steps: list[str] | None = None,
 ) -> SocialCard | None:
     if not settings.ENABLE_SOCIAL_CARD_GENERATION:
         return None
 
+    steps_key = "|".join(custom_steps) if custom_steps else "std"
     fingerprint_source = (
         f"{name}|{category}|{chain}|{instructions}|{image_prompt}|{project_url}|"
-        f"{generation_key or 'initial'}|{potential_reward}|{CARD_STYLE_VERSION}"
+        f"{generation_key or 'initial'}|{potential_reward}|{custom_artwork_path or ''}|"
+        f"{theme_color or ''}|{steps_key}|{CARD_STYLE_VERSION}"
     )
     fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:16]
     output_path = Path(settings.SOCIAL_CARD_DIRECTORY).resolve() / f"{fingerprint}.jpg"
     if output_path.is_file():
         return SocialCard(str(output_path), "generated_social_card_cached")
 
-    # Load and transform master artwork
+    # Load and transform master or custom artwork
     try:
-        if TEMPLATE_PATH.is_file():
+        if custom_artwork_path and Path(custom_artwork_path).is_file():
+            base_art = Image.open(custom_artwork_path)
+        elif TEMPLATE_PATH.is_file():
             base_art = Image.open(TEMPLATE_PATH)
         else:
             base_art = Image.new("RGB", (WIDTH, HEIGHT), (6, 10, 8))
 
         transformed_art, accent = await asyncio.to_thread(
-            _transform_artwork, base_art, image_prompt
+            _transform_artwork, base_art, image_prompt, theme_color
         )
 
         await asyncio.to_thread(
@@ -911,6 +956,7 @@ async def generate_social_card(
             transformed_art,
             accent,
             project_url,
+            custom_steps,
         )
         return SocialCard(str(output_path), "generated_social_card_master")
     except Exception as exc:

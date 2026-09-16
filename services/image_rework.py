@@ -48,3 +48,50 @@ def classify_rework_intent(feedback: str | None) -> str:
         return "text_only"
     return "both"
 
+
+def detect_theme_color(feedback: str | None) -> str | None:
+    """Extract requested color theme if present in feedback."""
+    fb = (feedback or "").lower()
+    if any(w in fb for w in ["син", "голуб", "blue", "cyan", "лазур", "azure"]):
+        return "cyan"
+    if any(w in fb for w in ["фиолетов", "пурпур", "purple", "violet", "magenta"]):
+        return "violet"
+    if any(w in fb for w in ["красн", "red", "crimson", "алый"]):
+        return "red"
+    if any(w in fb for w in ["желт", "золот", "gold", "yellow", "янтарь", "amber"]):
+        return "gold"
+    if any(w in fb for w in ["оранж", "orange"]):
+        return "orange"
+    if any(w in fb for w in ["зелен", "лайм", "lime", "green"]):
+        return "lime"
+    return None
+
+
+def detect_preset(feedback: str | None) -> str | None:
+    """Extract preset style name if matched in feedback."""
+    fb = (feedback or "").lower()
+    if any(w in fb for w in ["самура", "мужик", "парен", "мужчин", "воин", "shinobi", "samurai"]):
+        return "shinobi"
+    if any(w in fb for w in ["город", "мегаполис", "небоскреб", "улиц", "city", "cybercity"]):
+        return "cybercity"
+    if any(w in fb for w in ["портал", "космос", "галактик", "звезд", "portal", "space", "galaxy"]):
+        return "portal"
+    if any(w in fb for w in ["сервер", "матриц", "терминал", "хакер", "data", "server", "matrix"]):
+        return "matrix"
+    if any(w in fb for w in ["девушк", "тян", "kunoichi", "girl", "ninja girl"]):
+        return "kunoichi"
+    return None
+
+
+def build_ai_art_prompt(feedback: str, project_name: str) -> str:
+    """Build English prompt for background artwork from Russian/English feedback."""
+    fb = (feedback or "").strip()
+    preset = detect_preset(fb)
+    color = detect_theme_color(fb)
+    color_hint = f" with vibrant {color} neon energy glow" if color else ""
+
+    if preset:
+        return f"{fb}. Cyberpunk {project_name} theme{color_hint}"
+    return f"Atmospheric cyberpunk crypto editorial scene for {project_name}: {fb}{color_hint}"
+
+

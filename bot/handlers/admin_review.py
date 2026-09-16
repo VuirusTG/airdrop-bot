@@ -9,25 +9,43 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputMediaPhoto, 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import selectinload
 
-from bot.keyboards import archive_keyboard, open_in_x_keyboard, review_keyboard
+from bot.keyboards import (
+    archive_keyboard,
+    open_in_x_keyboard,
+    photo_studio_keyboard,
+    review_keyboard,
+    studio_colors_keyboard,
+    studio_styles_keyboard,
+    upload_choice_keyboard,
+)
 from config import settings
 from db.database import get_session
 from db.models import Draft, Project, ProjectStatus, PublishedPost
 from ingestion.scheduler import source_scanner
 from publishing.dispatcher import publish_project
 from services.ai_rework import rework_draft
-from services.image_rework import classify_rework_intent, requests_image_rework
+from services.artwork_generator import STYLE_PRESETS, generate_artwork
+from services.image_rework import (
+    build_ai_art_prompt,
+    classify_rework_intent,
+    detect_preset,
+    detect_theme_color,
+    requests_image_rework,
+)
 from services.llm_draft import DraftResult
 from services.media import ensure_draft_image, telegram_photo
 from services.project_image import discover_project_image
 from services.project_link import discover_project_link
-from services.social_card import generate_social_card
+from services.social_card import THEME_COLORS, generate_social_card
 from services.health import collect_system_health
 
 logger = logging.getLogger(__name__)
 
 router = Router()
 awaiting_feedback: dict[int, bool] = {}
+awaiting_upload: dict[int, int] = {}
+awaiting_steps: dict[int, int] = {}
+uploaded_tokens: dict[str, str] = {}
 _manual_scan_task: asyncio.Task | None = None
 
 
@@ -145,7 +163,11 @@ def _review_caption(project: Project, draft: Draft, position: int, total: int) -
 
 
 
-async def _replace_review_message(callback: CallbackQuery, project_id: int) -> None:
+async def _replace_review_message(
+    callback: CallbackQuery,
+    project_id: int,
+    keyboard: InlineKeyboardMarkup | None = None,
+) -> None:
     """Keep one stable review card, including media/text type changes."""
     if not callback.message:
         return
@@ -160,7 +182,8 @@ async def _replace_review_message(callback: CallbackQuery, project_id: int) -> N
             await session.commit()
 
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
-        keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+        if keyboard is None:
+            keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
 
         photo_obj = telegram_photo(draft.image_path) if draft.image_path else None
         current_has_photo = bool(callback.message.photo)
@@ -584,6 +607,413 @@ async def on_regenerate_image(callback: CallbackQuery):
                 await callback.message.answer("Изображение создано, но карточку не удалось обновить. Используйте /review.")
 
 
+@router.callback_query(F.data.startswith("studio_open:"))
+async def on_studio_open(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    project_id = int(callback.data.split(":")[1])
+    if callback.message:
+        await callback.message.edit_reply_markup(
+            reply_markup=photo_studio_keyboard(project_id)
+        )
+    await callback.answer("🎨 Студия карточки")
+
+
+@router.callback_query(F.data.startswith("studio_back:"))
+async def on_studio_back(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    project_id = int(callback.data.split(":")[1])
+    await _replace_review_message(callback, project_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("studio_colors:"))
+async def on_studio_colors(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    project_id = int(callback.data.split(":")[1])
+    if callback.message:
+        await callback.message.edit_reply_markup(
+            reply_markup=studio_colors_keyboard(project_id)
+        )
+    await callback.answer("Выберите цвет")
+
+
+@router.callback_query(F.data.startswith("set_color:"))
+async def on_set_color(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    _, pid_str, color_name = callback.data.split(":")
+    project_id = int(pid_str)
+    await callback.answer(f"Применяю цвет: {color_name}...")
+
+    async with get_session() as session:
+        project = await _load_project(session, project_id)
+        if not project or not project.latest_draft():
+            return
+        previous_draft = project.latest_draft()
+        new_version = previous_draft.version + 1
+        loop_time = int(asyncio.get_event_loop().time())
+        social_card = await generate_social_card(
+            name=project.name,
+            category=project.category,
+            chain=project.chain,
+            instructions=previous_draft.instructions,
+            official_image_url=None,
+            image_prompt=previous_draft.image_prompt,
+            project_url=project.project_url,
+            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
+            potential_reward=previous_draft.potential_reward,
+            theme_color=color_name,
+        )
+        if not social_card:
+            await callback.answer("Ошибка смены цвета", show_alert=True)
+            return
+
+        new_draft = Draft(
+            project_id=project.id,
+            version=new_version,
+            title=previous_draft.title,
+            summary=previous_draft.summary,
+            instructions=previous_draft.instructions,
+            potential_reward=previous_draft.potential_reward,
+            risk_note=previous_draft.risk_note,
+            twitter_text=previous_draft.twitter_text,
+            image_path=social_card.path,
+            image_source=social_card.source,
+            image_prompt=f"color:{color_name}",
+            source_url=project.source_url,
+            project_url=project.project_url,
+            rework_feedback=f"Set color {color_name}",
+        )
+        project.drafts.append(new_draft)
+        await session.commit()
+
+    await _replace_review_message(callback, project_id, keyboard=studio_colors_keyboard(project_id))
+
+
+@router.callback_query(F.data.startswith("studio_styles:"))
+async def on_studio_styles(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    project_id = int(callback.data.split(":")[1])
+    if callback.message:
+        await callback.message.edit_reply_markup(
+            reply_markup=studio_styles_keyboard(project_id)
+        )
+    await callback.answer("Выберите стиль фона")
+
+
+@router.callback_query(F.data.startswith("set_style:"))
+async def on_set_style(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    _, pid_str, preset_name = callback.data.split(":")
+    project_id = int(pid_str)
+    await callback.answer(f"Генерирую стиль {preset_name}...")
+
+    preset_info = STYLE_PRESETS.get(preset_name, {})
+    preset_theme = preset_info.get("theme_color", "lime")
+    seed = int(asyncio.get_event_loop().time()) % 100000
+    art_path, provider = await generate_artwork(preset=preset_name, seed=seed)
+
+    async with get_session() as session:
+        project = await _load_project(session, project_id)
+        if not project or not project.latest_draft():
+            return
+        previous_draft = project.latest_draft()
+        new_version = previous_draft.version + 1
+        loop_time = int(asyncio.get_event_loop().time())
+        social_card = await generate_social_card(
+            name=project.name,
+            category=project.category,
+            chain=project.chain,
+            instructions=previous_draft.instructions,
+            official_image_url=None,
+            image_prompt=f"preset:{preset_name}",
+            project_url=project.project_url,
+            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
+            potential_reward=previous_draft.potential_reward,
+            custom_artwork_path=art_path,
+            theme_color=preset_theme,
+        )
+        if not social_card:
+            await callback.answer("Не удалось применить стиль", show_alert=True)
+            return
+
+        new_draft = Draft(
+            project_id=project.id,
+            version=new_version,
+            title=previous_draft.title,
+            summary=previous_draft.summary,
+            instructions=previous_draft.instructions,
+            potential_reward=previous_draft.potential_reward,
+            risk_note=previous_draft.risk_note,
+            twitter_text=previous_draft.twitter_text,
+            image_path=social_card.path,
+            image_source=f"preset_{preset_name}_{provider}",
+            image_prompt=f"preset:{preset_name}",
+            source_url=project.source_url,
+            project_url=project.project_url,
+            rework_feedback=f"Preset {preset_name}",
+        )
+        project.drafts.append(new_draft)
+        await session.commit()
+
+    await _replace_review_message(callback, project_id, keyboard=studio_styles_keyboard(project_id))
+
+
+@router.callback_query(F.data.startswith("studio_regen_ai:"))
+async def on_studio_regen_ai(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    project_id = int(callback.data.split(":")[1])
+    await callback.answer("🎨 ИИ генерирует новый фоновый арт...")
+
+    async with get_session() as session:
+        project = await _load_project(session, project_id)
+        if not project or not project.latest_draft():
+            return
+        previous_draft = project.latest_draft()
+
+        art_prompt = f"Futuristic cyberpunk crypto artwork for {project.name}, blockchain ecosystem"
+        seed = int(asyncio.get_event_loop().time() * 10) % 999999
+        art_path, provider = await generate_artwork(prompt=art_prompt, seed=seed)
+
+        new_version = previous_draft.version + 1
+        loop_time = int(asyncio.get_event_loop().time())
+        social_card = await generate_social_card(
+            name=project.name,
+            category=project.category,
+            chain=project.chain,
+            instructions=previous_draft.instructions,
+            official_image_url=None,
+            image_prompt=art_prompt,
+            project_url=project.project_url,
+            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
+            potential_reward=previous_draft.potential_reward,
+            custom_artwork_path=art_path,
+        )
+        if not social_card:
+            await callback.answer("Ошибка генерации ИИ", show_alert=True)
+            return
+
+        new_draft = Draft(
+            project_id=project.id,
+            version=new_version,
+            title=previous_draft.title,
+            summary=previous_draft.summary,
+            instructions=previous_draft.instructions,
+            potential_reward=previous_draft.potential_reward,
+            risk_note=previous_draft.risk_note,
+            twitter_text=previous_draft.twitter_text,
+            image_path=social_card.path,
+            image_source=f"ai_{provider}",
+            image_prompt=art_prompt,
+            source_url=project.source_url,
+            project_url=project.project_url,
+            rework_feedback="AI Art Regeneration",
+        )
+        project.drafts.append(new_draft)
+        await session.commit()
+
+    await _replace_review_message(callback, project_id, keyboard=photo_studio_keyboard(project_id))
+
+
+@router.callback_query(F.data.startswith("studio_upload:"))
+async def on_studio_upload(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    project_id = int(callback.data.split(":")[1])
+    awaiting_upload[callback.from_user.id] = project_id
+    if callback.message:
+        await callback.message.reply(
+            f"📎 <b>Загрузка своего фото для проекта #{project_id}</b>\n\n"
+            "Отправьте фотографию или баннер прямо в этот чат (можно в ответ на это сообщение).\n\n"
+            "После отправки появится выбор: сделать фото фоном карточки (с наложением текста) или заменить карточку целиком.",
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("studio_steps:"))
+async def on_studio_steps(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    project_id = int(callback.data.split(":")[1])
+    awaiting_steps[callback.from_user.id] = project_id
+    if callback.message:
+        await callback.message.reply(
+            f"📝 <b>Редактирование шагов на карточке (project #{project_id})</b>\n\n"
+            "Отправьте в ответ 3 шага для карточки (каждый с новой строки):\n\n"
+            "<code>1. Visit official testnet bridge\n2. Swap tokens on DEX\n3. Mint verified badge</code>\n\n"
+            "<i>(Рекомендуется использовать короткие ёмкие фразы на английском)</i>",
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("apply_upload_bg:"))
+async def on_apply_upload_bg(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    _, pid_str, token = callback.data.split(":")
+    project_id = int(pid_str)
+    img_path = uploaded_tokens.get(token)
+    if not img_path or not Path(img_path).is_file():
+        await callback.answer("Фото устарело или не найдено. Отправьте заново.", show_alert=True)
+        return
+
+    await callback.answer("Применяю как фон карточки...")
+    async with get_session() as session:
+        project = await _load_project(session, project_id)
+        if not project or not project.latest_draft():
+            return
+        previous_draft = project.latest_draft()
+        new_version = previous_draft.version + 1
+        loop_time = int(asyncio.get_event_loop().time())
+        social_card = await generate_social_card(
+            name=project.name,
+            category=project.category,
+            chain=project.chain,
+            instructions=previous_draft.instructions,
+            official_image_url=None,
+            image_prompt="user_custom_background",
+            project_url=project.project_url,
+            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
+            potential_reward=previous_draft.potential_reward,
+            custom_artwork_path=img_path,
+        )
+        if not social_card:
+            await callback.answer("Ошибка генерации карточки из фото", show_alert=True)
+            return
+
+        new_draft = Draft(
+            project_id=project.id,
+            version=new_version,
+            title=previous_draft.title,
+            summary=previous_draft.summary,
+            instructions=previous_draft.instructions,
+            potential_reward=previous_draft.potential_reward,
+            risk_note=previous_draft.risk_note,
+            twitter_text=previous_draft.twitter_text,
+            image_path=social_card.path,
+            image_source="user_upload_card",
+            image_prompt="user_custom_background",
+            source_url=project.source_url,
+            project_url=project.project_url,
+            rework_feedback="User uploaded custom card background",
+        )
+        project.drafts.append(new_draft)
+        await session.commit()
+
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+    await _replace_review_message(callback, project_id)
+
+
+@router.callback_query(F.data.startswith("apply_upload_full:"))
+async def on_apply_upload_full(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    _, pid_str, token = callback.data.split(":")
+    project_id = int(pid_str)
+    img_path = uploaded_tokens.get(token)
+    if not img_path or not Path(img_path).is_file():
+        await callback.answer("Фото устарело или не найдено. Отправьте заново.", show_alert=True)
+        return
+
+    await callback.answer("Карточка заменена на ваше фото!")
+    async with get_session() as session:
+        project = await _load_project(session, project_id)
+        if not project or not project.latest_draft():
+            return
+        previous_draft = project.latest_draft()
+        new_version = previous_draft.version + 1
+
+        new_draft = Draft(
+            project_id=project.id,
+            version=new_version,
+            title=previous_draft.title,
+            summary=previous_draft.summary,
+            instructions=previous_draft.instructions,
+            potential_reward=previous_draft.potential_reward,
+            risk_note=previous_draft.risk_note,
+            twitter_text=previous_draft.twitter_text,
+            image_path=img_path,
+            image_source="user_upload_direct",
+            image_prompt="user_upload_direct",
+            source_url=project.source_url,
+            project_url=project.project_url,
+            rework_feedback="User uploaded direct image replacement",
+        )
+        project.drafts.append(new_draft)
+        await session.commit()
+
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+    await _replace_review_message(callback, project_id)
+
+
+@router.message(F.photo)
+async def on_photo_message(message: Message):
+    if not await _is_admin_message(message):
+        return
+    user_id = message.from_user.id if message.from_user else 0
+    project_id = awaiting_upload.pop(user_id, None)
+
+    if not project_id and message.reply_to_message:
+        txt = message.reply_to_message.text or message.reply_to_message.caption or ""
+        if "(project #" in txt:
+            try:
+                project_id = int(txt.split("(project #")[1].split(")")[0].strip())
+            except (ValueError, IndexError):
+                pass
+        elif "#" in txt:
+            m = re.search(r"#(\d+)", txt)
+            if m:
+                project_id = int(m.group(1))
+
+    if not project_id:
+        async with get_session() as session:
+            queue = await _review_queue(session)
+            if queue:
+                project_id = queue[0].id
+
+    if not project_id:
+        await message.answer("Не удалось определить проект для этой фотографии. Нажмите «Загрузить своё фото» в карточке.")
+        return
+
+    photo = message.photo[-1]
+    file = await message.bot.get_file(photo.file_id)
+    if not file.file_path:
+        await message.answer("Не удалось скачать фотографию из Telegram.")
+        return
+
+    import secrets
+    token = secrets.token_hex(8)
+    upload_dir = Path("images/user_uploads").resolve()
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = upload_dir / f"upload_{project_id}_{token}.jpg"
+
+    await message.bot.download_file(file.file_path, destination=dest_path)
+    uploaded_tokens[token] = str(dest_path)
+
+    await message.answer(
+        f"📸 <b>Фото получено для проекта #{project_id}!</b>\n\n"
+        "Как вы хотите его использовать?",
+        parse_mode="HTML",
+        reply_markup=upload_choice_keyboard(project_id, token),
+    )
+
+
 @router.message(F.reply_to_message, F.text)
 async def on_feedback_reply(message: Message):
     if not await _is_admin_message(message):
@@ -598,6 +1028,84 @@ async def on_feedback_reply(message: Message):
 
     awaiting_feedback.pop(project_id, None)
     feedback_text = message.text.strip()
+
+    # Check if this reply is for card steps editing
+    if "Редактирование шагов на карточке" in prompt_text:
+        awaiting_steps.pop(message.from_user.id if message.from_user else 0, None)
+        steps_lines = [line.strip() for line in feedback_text.splitlines() if line.strip()]
+        if not steps_lines:
+            await message.answer("Шаги не распознаны. Отправьте 3 шага, каждый с новой строки.")
+            return
+
+        async with get_session() as session:
+            project = await _load_project(session, project_id)
+            if not project or not project.latest_draft():
+                return
+            previous_draft = project.latest_draft()
+            new_version = previous_draft.version + 1
+            loop_time = int(asyncio.get_event_loop().time())
+
+            social_card = await generate_social_card(
+                name=project.name,
+                category=project.category,
+                chain=project.chain,
+                instructions=previous_draft.instructions,
+                official_image_url=None,
+                project_url=project.project_url,
+                generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
+                potential_reward=previous_draft.potential_reward,
+                custom_steps=steps_lines[:3],
+            )
+            if not social_card:
+                await message.answer("Не удалось обновить шаги на карточке.")
+                return
+
+            new_draft = Draft(
+                project_id=project.id,
+                version=new_version,
+                title=previous_draft.title,
+                summary=previous_draft.summary,
+                instructions=previous_draft.instructions,
+                potential_reward=previous_draft.potential_reward,
+                risk_note=previous_draft.risk_note,
+                twitter_text=previous_draft.twitter_text,
+                image_path=social_card.path,
+                image_source=social_card.source,
+                image_prompt=previous_draft.image_prompt,
+                source_url=project.source_url,
+                project_url=project.project_url,
+                rework_feedback=f"Custom card steps: {'; '.join(steps_lines[:3])}",
+            )
+            project.drafts.append(new_draft)
+            await session.commit()
+
+            queue = await _review_queue(session)
+            position, total, previous_id, next_id = _queue_meta(queue, project.id)
+            keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+            caption = _review_caption(project, new_draft, position, total)
+
+            if project.review_message_id and project.review_chat_id:
+                try:
+                    await message.bot.delete_message(
+                        chat_id=project.review_chat_id,
+                        message_id=project.review_message_id,
+                    )
+                except Exception:
+                    pass
+
+            photo_input = telegram_photo(new_draft.image_path)
+            if photo_input:
+                sent = await message.bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=photo_input,
+                    caption=caption,
+                    reply_markup=keyboard,
+                )
+                project.review_chat_id = sent.chat.id
+                project.review_message_id = sent.message_id
+                await session.commit()
+            return
+
     intent = classify_rework_intent(feedback_text)
     logger.info("Rework intent for project #%s: '%s' (feedback: '%s')", project_id, intent, feedback_text)
 
@@ -658,6 +1166,20 @@ async def on_feedback_reply(message: Message):
 
         if intent in ("image_only", "both"):
             try:
+                preset = detect_preset(feedback_text)
+                theme_color = detect_theme_color(feedback_text)
+                art_path = None
+                art_provider = "master"
+
+                if requests_image_rework(feedback_text) or preset:
+                    art_prompt = build_ai_art_prompt(feedback_text, project.name)
+                    seed = int(asyncio.get_event_loop().time()) % 100000
+                    art_path, art_provider = await generate_artwork(
+                        prompt=art_prompt,
+                        preset=preset,
+                        seed=seed,
+                    )
+
                 official_image = await discover_project_image(project.source_url)
                 img_prompt = f"{previous_draft.image_prompt or ''}; visual feedback: {feedback_text}".strip(" ;")
                 loop_time = int(asyncio.get_event_loop().time())
@@ -671,6 +1193,8 @@ async def on_feedback_reply(message: Message):
                     project_url=project.project_url,
                     generation_key=f"project-{project.id}-v{previous_draft.version + 1}-{loop_time}",
                     potential_reward=new_result.potential_reward,
+                    custom_artwork_path=art_path,
+                    theme_color=theme_color,
                 )
             except Exception as exc:
                 logger.warning("Failed to generate new social card in rework: %s", exc)
