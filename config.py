@@ -69,13 +69,18 @@ class Settings:
         0.0, float(os.getenv("LLM_MIN_REQUEST_INTERVAL_SECONDS", "13"))
     )
     LLM_MAX_RATE_RETRIES: int = max(0, _int("LLM_MAX_RATE_RETRIES", 2))
-    # Groq is the primary cloud model for filtering, drafting, and rework.
+    # Groq is the cloud model for filtering, drafting, and rework.
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     GROQ_MIN_REQUEST_INTERVAL_SECONDS: float = max(
         0.0, float(os.getenv("GROQ_MIN_REQUEST_INTERVAL_SECONDS", "2.1"))
     )
     GROQ_MAX_RATE_RETRIES: int = max(0, _int("GROQ_MAX_RATE_RETRIES", 2))
+
+    # OpenRouter for conversational AI draft editing and generation
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip()
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+    OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
     FILTER_MIN_SCORE: float = float(os.getenv("FILTER_MIN_SCORE", "4.0"))
     FILTER_VERSION: int = max(1, _int("FILTER_VERSION", 2))
     ENABLE_IMAGE_DISCOVERY: bool = _bool("ENABLE_IMAGE_DISCOVERY", True)

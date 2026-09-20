@@ -40,18 +40,33 @@ class VersionManager:
         last_version = res.scalar_one_or_none() or 0
         new_version = last_version + 1
 
+        safe_action = (action or "Редактирование").strip()
+        if len(safe_action) > 250:
+            safe_action = safe_action[:247] + "..."
+
         snapshot = DraftSnapshot(
             draft_id=draft_id,
             project_id=project_id,
             version=new_version,
-            action=action,
+            action=safe_action,
             user_command=user_command,
             edit_plan_json=edit_plan_json,
             content_json=content.to_json(),
         )
         session.add(snapshot)
-        await session.commit()
-        logger.info("Saved snapshot v%s for draft #%s (action: %s)", new_version, draft_id, action)
+        try:
+            await session.commit()
+        except Exception as exc:
+            # Safe fallback if database column is still VARCHAR(64) before migration
+            if "character varying" in str(exc) or "StringDataRightTruncationError" in type(exc).__name__:
+                await session.rollback()
+                snapshot.action = safe_action[:60] + "..." if len(safe_action) > 64 else safe_action[:64]
+                session.add(snapshot)
+                await session.commit()
+            else:
+                raise
+
+        logger.info("Saved snapshot v%s for draft #%s (action: %s)", new_version, draft_id, snapshot.action)
         return snapshot
 
     @staticmethod

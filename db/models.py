@@ -124,7 +124,7 @@ class DraftSnapshot(Base):
     draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"), index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     version: Mapped[int] = mapped_column(Integer)
-    action: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(255))
     user_command: Mapped[str] = mapped_column(Text, nullable=True)
     edit_plan_json: Mapped[str] = mapped_column(Text, nullable=True)
     content_json: Mapped[str] = mapped_column(Text)

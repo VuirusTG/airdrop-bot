@@ -52,6 +52,11 @@ async def _ensure_optional_columns(conn) -> None:
         "projects",
         {"filter_version": "INTEGER DEFAULT 1", "project_url": "TEXT"},
     )
+    if conn.dialect.name == "postgresql":
+        try:
+            await conn.execute(text("ALTER TABLE draft_snapshots ALTER COLUMN action TYPE VARCHAR(255)"))
+        except Exception:
+            pass
 
 
 async def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:

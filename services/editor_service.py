@@ -144,9 +144,9 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
     """Fast regex-based intent parsing for unambiguous commands without LLM latency."""
     cmd = command.strip()
 
-    # 1. Change potential reward: "Измени Potential Rewards с $2500+ на $1000+" / "Поменяй награду на $500"
+    # 1. Change potential reward: "Измени Potential Rewards с $2500+ на $1000+" / "Измени Potential rewards на фото на "$1000+"" / "Поменяй награду на $500"
     m_rew = re.search(
-        r"(?:измени|поменяй|смени|поставь|change|update|set)\s+(?:potential\s+rewards?|наград\w*|reward)\s+(?:с\s+[^\s]+\s+)?на\s+([$€£]?\d+[\w,+]*|\$?[A-Za-z0-9+]+)",
+        r"(?:измени|поменяй|смени|поставь|change|update|set)\s+(?:(?:на\s+)?(?:фото|картинке|карточке|баннере)\s+)?(?:potential\s+rewards?|наград\w*|reward)(?:\s+(?:на\s+)?(?:фото|картинке|карточке|баннере))?\s+(?:с\s+[^\s]+\s+)?на\s+[\"']?([$€£]?\d+[\w,+]*|\$?[A-Za-z0-9+]+)[\"']?",
         cmd,
         re.IGNORECASE,
     )
@@ -253,9 +253,9 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             explanation="Добавление новой задачи",
         )
 
-    # 6. Change title: "Измени заголовок на: Base Airdrop Season 2"
+    # 6. Change title: "Измени заголовок на: Base Airdrop Season 2" / "Поменяй заголовок на фото на ..."
     m_title = re.search(
-        r"(?:измени|поменяй|смени|set|change)\s+(?:заголовок|название|title)\s*на\s*[:\s]*(.+)",
+        r"(?:измени|поменяй|смени|set|change)\s+(?:(?:на\s+)?(?:фото|картинке|карточке)\s+)?(?:заголовок|название|title)(?:\s+(?:на\s+)?(?:фото|картинке|карточке))?\s*на\s*[:\s]*(.+)",
         cmd,
         re.IGNORECASE,
     )
@@ -274,7 +274,8 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
         )
 
     # 7. Image & artwork edits: "поменяй фон", "сделай фон синим", "измени картинку на киберпанк", "поменяй фото", etc.
-    if requests_image_rework(cmd):
+    from services.image_rework import requests_text_rework
+    if requests_image_rework(cmd) and not requests_text_rework(cmd):
         theme = detect_theme_color(cmd)
         preset = detect_preset(cmd)
         if theme and not preset and not re.search(r"полностью|сгенерир|flux|ai\b|нов(?:ый|ую)\s+арт", cmd, re.IGNORECASE):
@@ -290,6 +291,7 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
                 explanation=f"Смена цвета темы карточки на '{theme}'",
             )
         else:
+            clean_cmd = cmd[:40].strip()
             return EditPlan(
                 target="image_background",
                 operation="regenerate",
@@ -299,7 +301,7 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
                 requires_confirmation=False,
                 affected_components=["draft_data", "social_card"],
                 image_operation="new_artwork",
-                explanation=f"Обновление фона карточки: {cmd}",
+                explanation=f"Обновление фона карточки: {clean_cmd}",
             )
 
     # 8. Full draft / text rework / rewrite: "Сделай текст поста лаконичным и завлекающим", "Улучши текст", "Сократи пост", etc.
@@ -347,7 +349,22 @@ async def parse_intent_with_llm(command: str, current: DraftContent) -> EditPlan
         "Return the structured JSON EditPlan:"
     )
 
-    # Try Groq first
+    # Try OpenRouter first
+    if settings.OPENROUTER_API_KEY:
+        try:
+            from services.openrouter_client import generate_json as openrouter_json
+            response_json = await openrouter_json(
+                system_instruction=INTENT_PARSER_SYSTEM_PROMPT,
+                contents=user_context,
+                model=settings.OPENROUTER_MODEL,
+                temperature=0.1,
+            )
+            data = json.loads(response_json)
+            return EditPlan.from_dict(data)
+        except Exception as exc:
+            logger.warning("OpenRouter intent parse failed: %s; trying Groq fallback", exc)
+
+    # Try Groq second
     if settings.GROQ_API_KEY:
         try:
             response_json = await generate_json(
@@ -482,7 +499,16 @@ Return ONLY a valid JSON object:
 
 
 async def rewrite_draft_with_llm(current: DraftContent, instruction: str) -> DraftContent:
-    """Rewrite and elevate the entire draft using Groq with Gemini fallback."""
+    """Rewrite and elevate the entire draft using OpenRouter -> Groq -> Gemini cascade."""
+    # 1. Try OpenRouter if configured
+    if settings.OPENROUTER_API_KEY:
+        try:
+            from services.ai_editor_llm import ai_edit_draft
+            updated, meta = await ai_edit_draft(current, instruction)
+            return updated
+        except Exception as exc:
+            logger.warning("ai_edit_draft failed: %s; trying Groq/Gemini", exc)
+
     import copy
     updated = copy.deepcopy(current)
 
@@ -500,7 +526,7 @@ async def rewrite_draft_with_llm(current: DraftContent, instruction: str) -> Dra
     )
 
     data = None
-    # 1. Groq
+    # 2. Try Groq
     if settings.GROQ_API_KEY:
         try:
             resp_json = await generate_json(
@@ -513,7 +539,7 @@ async def rewrite_draft_with_llm(current: DraftContent, instruction: str) -> Dra
         except Exception as exc:
             logger.warning("Groq draft rewrite failed: %s; trying Gemini", exc)
 
-    # 2. Gemini fallback
+    # 3. Gemini fallback
     if data is None and settings.GEMINI_API_KEY:
         try:
             resp = await generate_content(
