@@ -139,11 +139,12 @@ def _review_caption(project: Project, draft: Draft, position: int, total: int) -
 
     # Twitter draft formatted strictly <= 280 chars for free Twitter accounts
     tw_section = ""
+    tw_text = ""
     if draft.twitter_text:
-        tw = draft.twitter_text.strip()
-        if len(tw) > 280:
-            tw = tw[:279].rsplit(" ", 1)[0] + "…"
-        tw_section = f"\n\n2. Черновик для твиттера\n\n{tw}"
+        tw_text = draft.twitter_text.strip()
+        if len(tw_text) > 280:
+            tw_text = tw_text[:279].rsplit(" ", 1)[0] + "…"
+        tw_section = f"\n\n2. Черновик для твиттера\n\n{tw_text}"
 
     tg_header = "1. Черновик для телеграмм канала"
     tg_body = draft.rendered_text()
@@ -155,23 +156,32 @@ def _review_caption(project: Project, draft: Draft, position: int, total: int) -
     )
 
     full_text = f"{meta_section}\n\n{tg_header}\n\n{tg_body}{tw_section}"
-
     if len(full_text) <= 1024:
         return full_text
 
-    # Prioritize Telegram post: do not cut off tasks or draft body!
-    # Option 1: Drop Twitter section (it has its own button [🐦 Опубликовать в X])
-    without_tw = f"{meta_section}\n\n{tg_header}\n\n{tg_body}"
-    if len(without_tw) <= 1024:
-        return without_tw
+    # Priority 1: Keep BOTH Telegram & Twitter by making metadata compact
+    compact_meta = f"{header}\n🔗 {project_url}\n🔒 {source}"
+    compact_with_tw = f"{compact_meta}\n\n{tg_header}\n\n{tg_body}{tw_section}"
+    if len(compact_with_tw) <= 1024:
+        return compact_with_tw
 
-    # Option 2: Compact meta section (keep header + public project link + telegram post)
-    compact_meta = f"{header}\n🔗 Ссылка: {project_url}"
-    compact_text = f"{compact_meta}\n\n{tg_body}"
-    if len(compact_text) <= 1024:
-        return compact_text
+    # Priority 2: Minimal headers so both Telegram & Twitter fit
+    if tw_text:
+        minimal_with_tw = f"{header}\n🔗 {project_url}\n\n1. Telegram:\n{tg_body}\n\n2. Twitter (X):\n{tw_text}"
+        if len(minimal_with_tw) <= 1024:
+            return minimal_with_tw
 
-    # Option 4: Full Telegram body directly
+    # Priority 3: If Telegram body alone is long, prioritize full Telegram post + compact meta
+    compact_tg_only = f"{compact_meta}\n\n{tg_header}\n\n{tg_body}"
+    if len(compact_tg_only) <= 1024:
+        return compact_tg_only
+
+    # Priority 4: Minimal header + Telegram post
+    minimal_tg = f"{header}\n\n{tg_body}"
+    if len(minimal_tg) <= 1024:
+        return minimal_tg
+
+    # Priority 5: Full Telegram body directly
     if len(tg_body) <= 1024:
         return tg_body
 
@@ -1050,6 +1060,10 @@ async def _execute_and_apply_plan(
         return
 
     # Handle image operations according to level
+    color = detect_theme_color(user_command)
+    if color:
+        updated_content.artwork.theme_color = color
+
     if plan.image_operation in ("generate_artwork", "new_artwork"):
         preset = detect_preset(user_command)
         art_prompt = build_ai_art_prompt(user_command, project.name)
@@ -1069,7 +1083,7 @@ async def _execute_and_apply_plan(
         if card:
             updated_content.artwork.path = card.path
             updated_content.artwork.source = card.source
-    elif plan.image_operation in ("rerender_text", "local_edit"):
+    elif plan.image_operation in ("rerender_text", "local_edit", "restyle") or color:
         card = await render_social_card_from_content(updated_content)
         if card:
             updated_content.artwork.path = card.path
@@ -1272,68 +1286,72 @@ async def on_feedback_reply(message: Message):
             return
 
     # Standard Natural Language Edit via Editor V2
-    async with get_session() as session:
-        project = await _load_project(session, project_id)
-        if not project or not project.latest_draft():
-            await message.answer("Проект или черновик не найден.")
-            return
-        draft = project.latest_draft()
-        if not project.project_url:
-            project.project_url = await discover_project_link(
-                project.source_url, project.raw_data or "", project.name
+    try:
+        async with get_session() as session:
+            project = await _load_project(session, project_id)
+            if not project or not project.latest_draft():
+                await message.answer("Проект или черновик не найден.")
+                return
+            draft = project.latest_draft()
+            if not project.project_url:
+                project.project_url = await discover_project_link(
+                    project.source_url, project.raw_data or "", project.name
+                )
+
+            content = draft_to_content(draft, project)
+
+            has_snaps = await session.execute(
+                select(DraftSnapshot.id).where(DraftSnapshot.draft_id == draft.id).limit(1)
             )
+            if not has_snaps.scalar_one_or_none():
+                await VersionManager.save_snapshot(
+                    session,
+                    draft_id=draft.id,
+                    project_id=project.id,
+                    action="Исходный черновик",
+                    user_command=None,
+                    edit_plan_json=None,
+                    content=content,
+                )
 
-        content = draft_to_content(draft, project)
+            plan = await EditorService.create_edit_plan(feedback_text, content)
+            logger.info("Editor V2 plan for project #%s: %s", project.id, plan)
 
-        has_snaps = await session.execute(
-            select(DraftSnapshot.id).where(DraftSnapshot.draft_id == draft.id).limit(1)
-        )
-        if not has_snaps.scalar_one_or_none():
-            await VersionManager.save_snapshot(
-                session,
-                draft_id=draft.id,
-                project_id=project.id,
-                action="Исходный черновик",
-                user_command=None,
-                edit_plan_json=None,
-                content=content,
-            )
+            if plan.requires_confirmation and plan.operation in ("remove", "delete") and plan.confidence < 0.7:
+                pending_id = uuid.uuid4().hex[:8]
+                pending_edits[pending_id] = {
+                    "project_id": project.id,
+                    "draft_id": draft.id,
+                    "plan": plan,
+                    "content": content,
+                    "user_command": feedback_text,
+                }
 
-        plan = await EditorService.create_edit_plan(feedback_text, content)
-        logger.info("Editor V2 plan for project #%s: %s", project.id, plan)
+                def _format_diff_val(val: Any) -> str:
+                    if isinstance(val, list):
+                        return "\n" + "\n".join(f"{i}. {x}" for i, x in enumerate(val, 1))
+                    return str(val or "—")
 
-        if plan.requires_confirmation:
-            pending_id = uuid.uuid4().hex[:8]
-            pending_edits[pending_id] = {
-                "project_id": project.id,
-                "draft_id": draft.id,
-                "plan": plan,
-                "content": content,
-                "user_command": feedback_text,
-            }
+                diff_text = (
+                    f"📋 <b>Предложен план изменений (требует подтверждения):</b>\n\n"
+                    f"• <b>Объект:</b> <code>{html.escape(plan.target)}</code> ({plan.operation})\n"
+                    f"• <b>Было:</b> {html.escape(_format_diff_val(plan.old_value))}\n"
+                    f"• <b>Станет:</b> {html.escape(_format_diff_val(plan.new_value))}\n"
+                    f"• <b>Пояснение:</b> {html.escape(plan.explanation)}\n"
+                    f"• <b>Операция с карточкой:</b> <code>{plan.image_operation}</code>\n\n"
+                    f"Подтвердите применение или посмотрите предпросмотр:"
+                )
+                await message.reply(
+                    diff_text,
+                    parse_mode="HTML",
+                    reply_markup=edit_preview_keyboard(project.id, pending_id),
+                )
+                return
 
-            def _format_diff_val(val: Any) -> str:
-                if isinstance(val, list):
-                    return "\n" + "\n".join(f"{i}. {x}" for i, x in enumerate(val, 1))
-                return str(val or "—")
-
-            diff_text = (
-                f"📋 <b>Предложен план изменений (требует подтверждения):</b>\n\n"
-                f"• <b>Объект:</b> <code>{html.escape(plan.target)}</code> ({plan.operation})\n"
-                f"• <b>Было:</b> {html.escape(_format_diff_val(plan.old_value))}\n"
-                f"• <b>Станет:</b> {html.escape(_format_diff_val(plan.new_value))}\n"
-                f"• <b>Пояснение:</b> {html.escape(plan.explanation)}\n"
-                f"• <b>Операция с карточкой:</b> <code>{plan.image_operation}</code>\n\n"
-                f"Подтвердите применение или посмотрите предпросмотр:"
-            )
-            await message.reply(
-                diff_text,
-                parse_mode="HTML",
-                reply_markup=edit_preview_keyboard(project.id, pending_id),
-            )
-            return
-
-        await _execute_and_apply_plan(message, session, project, draft, content, plan, feedback_text)
+            await _execute_and_apply_plan(message, session, project, draft, content, plan, feedback_text)
+    except Exception as exc:
+        logger.exception("Error applying feedback edit: %s", exc)
+        await message.answer(f"⚠️ Ошибка при обработке команды: {html.escape(str(exc))}")
 
 
 @router.callback_query(F.data.startswith("preview_edit:"))

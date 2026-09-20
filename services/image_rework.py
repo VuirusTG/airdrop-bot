@@ -7,9 +7,10 @@ import re
 IMAGE_INTENT_RE = re.compile(
     r"(?:"
     r"картин\w*|изображен\w*|фот\w*|фон\w*|задн\w*\s+план|визуал\w*|облож\w*|карточк\w*|"
-    r"цвет\w*|оттен\w*|перерис\w*|девушк\w*|ниндз\w*|персонаж\w*|арт\w*|"
+    r"цвет\w*|оттен\w*|тем\w*|стил\w*|палитр\w*|перерис\w*|девушк\w*|ниндз\w*|персонаж\w*|арт\w*|"
+    r"киберпанк\w*|космос\w*|город\w*|неон\w*|"
     r"image|picture|photo|visual|background|bg|artwork|thumbnail|character|ninja|girl|"
-    r"colou?r|regenerate|social\s+card"
+    r"colou?r|theme|style|preset|cyberpunk|space|neon|regenerate|social\s+card"
     r")",
     re.IGNORECASE,
 )
@@ -72,9 +73,9 @@ def detect_preset(feedback: str | None) -> str | None:
     fb = (feedback or "").lower()
     if any(w in fb for w in ["самура", "мужик", "парен", "мужчин", "воин", "shinobi", "samurai"]):
         return "shinobi"
-    if any(w in fb for w in ["город", "мегаполис", "небоскреб", "улиц", "city", "cybercity"]):
+    if any(w in fb for w in ["город", "мегаполис", "небоскреб", "улиц", "кибер", "cyber", "cyberpunk", "city", "cybercity", "неон", "neon"]):
         return "cybercity"
-    if any(w in fb for w in ["портал", "космос", "галактик", "звезд", "portal", "space", "galaxy"]):
+    if any(w in fb for w in ["портал", "космос", "галактик", "звезд", "space", "galaxy", "portal"]):
         return "portal"
     if any(w in fb for w in ["сервер", "матриц", "терминал", "хакер", "data", "server", "matrix"]):
         return "matrix"

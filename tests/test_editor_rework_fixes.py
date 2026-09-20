@@ -153,6 +153,109 @@ class TestEditorReworkFixes(unittest.IsolatedAsyncioTestCase):
         self.assertIn("11M $LIT ($30M pool)", caption)
         self.assertIn("Robinhood Chain", caption)
 
+    def test_natural_language_rework_and_photo_commands(self):
+        """Verify natural language commands for text and photo editing are matched and routed properly."""
+        sample_draft = DraftContent(
+            title="Flop Network: AI-Agent Testnet",
+            category="TESTNET",
+            description="Flop Labs AI network.",
+            tasks=["Join testnet.", "Claim tokens."],
+        )
+
+        # 1. Natural phrasing for text rework
+        cmd_text = "Сделай текст поста лаконичным и завлекающим"
+        plan_text = _fast_deterministic_parse(cmd_text, sample_draft)
+        self.assertIsNotNone(plan_text)
+        self.assertEqual(plan_text.target, "full_draft")
+        self.assertEqual(plan_text.operation, "rewrite")
+        self.assertEqual(plan_text.image_operation, "rerender_text")
+
+        # 2. Color theme change (Level 1/2 Pillow recolor)
+        cmd_blue = "Поменяй фон на синий"
+        plan_blue = _fast_deterministic_parse(cmd_blue, sample_draft)
+        self.assertIsNotNone(plan_blue)
+        self.assertEqual(plan_blue.target, "artwork")
+        self.assertEqual(plan_blue.operation, "restyle")
+        self.assertEqual(plan_blue.new_value, "cyan")
+        self.assertEqual(plan_blue.image_operation, "local_edit")
+
+        cmd_violet = "Поменяй тему на фиолетовую"
+        plan_violet = _fast_deterministic_parse(cmd_violet, sample_draft)
+        self.assertIsNotNone(plan_violet)
+        self.assertEqual(plan_violet.target, "artwork")
+        self.assertEqual(plan_violet.new_value, "violet")
+        self.assertEqual(plan_violet.image_operation, "local_edit")
+
+        # 3. New artwork generation (Level 3 AI artwork)
+        cmd_cyber = "Сделай фон в стиле киберпанк"
+        plan_cyber = _fast_deterministic_parse(cmd_cyber, sample_draft)
+        self.assertIsNotNone(plan_cyber)
+        self.assertEqual(plan_cyber.target, "image_background")
+        self.assertEqual(plan_cyber.image_operation, "new_artwork")
+
+        cmd_photo = "Поменяй фотографию"
+        plan_photo = _fast_deterministic_parse(cmd_photo, sample_draft)
+        self.assertIsNotNone(plan_photo)
+        self.assertEqual(plan_photo.target, "image_background")
+        self.assertEqual(plan_photo.image_operation, "new_artwork")
+
+    def test_review_caption_preserves_twitter_post_when_compact(self):
+        """Verify project #98 (Flop Network) includes BOTH Telegram post and Twitter draft in the <=1024 caption."""
+        project = Project(
+            name="Flop Network",
+            source_url="https://airdropalert.com/airdrops/flop-network/",
+            legitimacy_score=6.5,
+        )
+        project.id = 98
+
+        content = DraftContent(
+            title="Flop Network: AI-Agent Testnet & Early Access",
+            category="AIRDROP",
+            description=(
+                "Flop Labs is building an innovative AI-agent network backed by industry leaders like Arthur Hayes. "
+                "Jump in early to position yourself for upcoming community testnet phases and ecosystem rewards."
+            ),
+            tasks=[
+                "Register for early participation roles as a GPU provider, validator, or creator",
+                "Generate a unique decentralized identifier key for secure platform interaction",
+                "Monitor official channels for upcoming testnet launch and token faucet updates",
+            ],
+            potential_reward="Unconfirmed token allocation",
+            network="Testnet",
+            project_link="https://flop.finance",
+            risk_note="Airdrop allocations, snapshot criteria, and tokenomics are not yet finalized, so verify all details on the official page.",
+            twitter_text="Flop Network is launching an AI-agent network testnet backed by Arthur Hayes! Complete tasks and qualify for rewards. #airdrop #testnet",
+        )
+
+        draft = Draft(
+            project_id=98,
+            title=content.title,
+            summary=content.description,
+            instructions=content.render_instructions_text(),
+            potential_reward=content.potential_reward,
+            risk_note=content.risk_note,
+            project_url=content.project_link,
+            source_url=project.source_url,
+            twitter_text=content.twitter_text,
+            content_json=content.to_json(),
+        )
+
+        caption = _review_caption(project, draft, 1, 25)
+
+        # Must fit Telegram's photo caption limit
+        self.assertLessEqual(len(caption), 1024)
+
+        # Telegram channel post must be fully present
+        self.assertIn("1. Register for early participation roles as a GPU provider, validator, or creator.", caption)
+        self.assertIn("2. Generate a unique decentralized identifier key for secure platform interaction.", caption)
+        self.assertIn("3. Monitor official channels for upcoming testnet launch and token faucet updates.", caption)
+        self.assertIn("https://flop.finance", caption)
+
+        # Twitter draft must NOT be dropped!
+        self.assertTrue("твиттер" in caption.lower() or "twitter" in caption.lower())
+        self.assertIn("Arthur Hayes", caption)
+
 
 if __name__ == "__main__":
     unittest.main()
+

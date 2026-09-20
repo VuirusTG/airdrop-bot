@@ -16,6 +16,7 @@ from config import settings
 from services.draft_content import DraftContent
 from services.gemini_client import generate_content
 from services.groq_client import generate_json
+from services.image_rework import detect_preset, detect_theme_color, requests_image_rework
 from services.task_validator import sanitize_task, validate_single_task, validate_tasks
 
 logger = logging.getLogger(__name__)
@@ -272,36 +273,59 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             explanation=f"Изменение заголовка на '{new_title}'",
         )
 
-    # 7. Complete new artwork: "Полностью создай новый фон в cyberpunk стиле" / "Сделай новый фон"
-    if re.search(r"(?:нов(?:ый|ую)|полностью|пересоздай|regenerate|recreate)\s+(?:фон|арт|картинк|artwork|background)", cmd, re.IGNORECASE):
-        return EditPlan(
-            target="image_background",
-            operation="regenerate",
-            old_value=current.artwork.prompt,
-            new_value=cmd,
-            confidence=0.96,
-            requires_confirmation=False,
-            affected_components=["draft_data", "social_card"],
-            image_operation="new_artwork",
-            explanation="Генерация нового фонового арта через ИИ",
-        )
+    # 7. Image & artwork edits: "поменяй фон", "сделай фон синим", "измени картинку на киберпанк", "поменяй фото", etc.
+    if requests_image_rework(cmd):
+        theme = detect_theme_color(cmd)
+        preset = detect_preset(cmd)
+        if theme and not preset and not re.search(r"полностью|сгенерир|flux|ai\b|нов(?:ый|ую)\s+арт", cmd, re.IGNORECASE):
+            return EditPlan(
+                target="artwork",
+                operation="restyle",
+                old_value=current.artwork.theme_color,
+                new_value=theme,
+                confidence=0.98,
+                requires_confirmation=False,
+                affected_components=["social_card"],
+                image_operation="local_edit",
+                explanation=f"Смена цвета темы карточки на '{theme}'",
+            )
+        else:
+            return EditPlan(
+                target="image_background",
+                operation="regenerate",
+                old_value=current.artwork.prompt,
+                new_value=cmd,
+                confidence=0.96,
+                requires_confirmation=False,
+                affected_components=["draft_data", "social_card"],
+                image_operation="new_artwork",
+                explanation=f"Обновление фона карточки: {cmd}",
+            )
 
-    # 8. Full draft rework / rewrite
+    # 8. Full draft / text rework / rewrite: "Сделай текст поста лаконичным и завлекающим", "Улучши текст", "Сократи пост", etc.
     if re.search(
-        r"^(?:перепиши|переделай|переработай|улучши|обнови|напиши|rework|rewrite)\s+(?:пост|текст|черновик|весь\s+пост|post|draft)?(?:\s+(?:нормальн\w*|по-человечески|заново|лучше|читабельн\w*))?.*$",
+        r"(?:перепиши|переделай|переработай|улучши|обнови|напиши|сделай|сократи|исправь|измени|подправь|перефразируй|rework|rewrite|shorten)\s+.*(?:пост|текст|черновик|описан|шаг|задач|draft|post|content)",
         cmd,
         re.IGNORECASE,
-    ) or re.search(r"^(?:нормальный\s+текст|перепиши|переделай|сделай\s+шаги|сделай\s+нормальный\s+текст.*)$", cmd, re.IGNORECASE):
+    ) or re.search(
+        r"^(?:сделай|перепиши|переделай|улучши|сократи|подправь)\s+.*(?:лаконичн|завлекающ|читабельн|короче|лучше|красив|понятн|нормальн)",
+        cmd,
+        re.IGNORECASE,
+    ) or re.search(
+        r"^(?:нормальный\s+текст|перепиши|переделай|сделай\s+шаги|сделай\s+нормальный\s+текст.*|улучши\s+текст.*|лаконичный\s+текст.*)$",
+        cmd,
+        re.IGNORECASE,
+    ):
         return EditPlan(
             target="full_draft",
             operation="rewrite",
             old_value=None,
             new_value=cmd,
-            confidence=0.95,
+            confidence=0.96,
             requires_confirmation=False,
             affected_components=["draft_data", "telegram_post", "social_card"],
             image_operation="rerender_text",
-            explanation=f"Полная переработка черновика: {cmd}",
+            explanation=f"Переработка текста черновика: {cmd}",
         )
 
     return None
@@ -656,9 +680,15 @@ class EditorService:
             new_content.project_link = str(new_val).strip()
 
         # 9. Artwork & Image Background
-        elif target in ("artwork", "image_background", "character"):
-            new_content.artwork.prompt = str(new_val).strip()
-            plan.image_operation = "new_artwork"
+        elif target in ("artwork", "image_background", "character", "image", "photo", "background", "card", "theme", "style"):
+            val_str = str(new_val).strip() if new_val else ""
+            color = detect_theme_color(val_str)
+            if color or op == "restyle" or plan.image_operation == "local_edit":
+                new_content.artwork.theme_color = color or val_str
+                plan.image_operation = "local_edit"
+            else:
+                new_content.artwork.prompt = val_str
+                plan.image_operation = "new_artwork"
 
         # Final check on tasks
         final_val = validate_tasks(new_content.tasks)
