@@ -89,7 +89,6 @@ def _needs_repair(draft: DraftResult, required_project_url: str | None = None) -
         draft.twitter_text,
         draft.image_prompt,
     )
-    has_cyrillic = any(re.search(r"[А-Яа-яЁё]", value or "") for value in public_fields)
     invalid_x_length = not draft.twitter_text or len(draft.twitter_text) > 280
     missing_project_url = bool(
         required_project_url
@@ -103,7 +102,7 @@ def _needs_repair(draft: DraftResult, required_project_url: str | None = None) -
         draft.risk_note,
     )
     url_in_telegram = any(re.search(r"https?://|www\.", value or "", re.IGNORECASE) for value in telegram_fields)
-    return has_cyrillic or invalid_x_length or missing_project_url or url_in_telegram
+    return invalid_x_length or missing_project_url or url_in_telegram
 
 
 async def _request_draft(user_content: str) -> DraftResult:

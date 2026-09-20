@@ -159,17 +159,23 @@ def _review_caption(project: Project, draft: Draft, position: int, total: int) -
     if len(full_text) <= 1024:
         return full_text
 
-    # If exceeding 1024 characters (Telegram limit for photo captions),
-    # smartly shorten the telegram draft body to fit while preserving links and twitter draft
-    overhead = len(meta_section) + len(f"\n\n{tg_header}\n\n") + len(tw_section)
-    avail_tg = 1024 - overhead - 5
-    if avail_tg > 80:
-        short_body = tg_body[:avail_tg].rsplit(" ", 1)[0] + "…"
-        res = f"{meta_section}\n\n{tg_header}\n\n{short_body}{tw_section}"
-        if len(res) <= 1024:
-            return res
+    # Prioritize Telegram post: do not cut off tasks or draft body!
+    # Option 1: Drop Twitter section (it has its own button [🐦 Опубликовать в X])
+    without_tw = f"{meta_section}\n\n{tg_header}\n\n{tg_body}"
+    if len(without_tw) <= 1024:
+        return without_tw
 
-    return full_text[:1020].rsplit(" ", 1)[0] + "…"
+    # Option 2: Compact meta section (keep header + public project link + telegram post)
+    compact_meta = f"{header}\n🔗 Ссылка: {project_url}"
+    compact_text = f"{compact_meta}\n\n{tg_body}"
+    if len(compact_text) <= 1024:
+        return compact_text
+
+    # Option 4: Full Telegram body directly
+    if len(tg_body) <= 1024:
+        return tg_body
+
+    return tg_body[:1020].rsplit("\n", 1)[0]
 
 
 
@@ -1306,11 +1312,16 @@ async def on_feedback_reply(message: Message):
                 "user_command": feedback_text,
             }
 
+            def _format_diff_val(val: Any) -> str:
+                if isinstance(val, list):
+                    return "\n" + "\n".join(f"{i}. {x}" for i, x in enumerate(val, 1))
+                return str(val or "—")
+
             diff_text = (
                 f"📋 <b>Предложен план изменений (требует подтверждения):</b>\n\n"
                 f"• <b>Объект:</b> <code>{html.escape(plan.target)}</code> ({plan.operation})\n"
-                f"• <b>Было:</b> {html.escape(str(plan.old_value or '—'))}\n"
-                f"• <b>Станет:</b> {html.escape(str(plan.new_value or '—'))}\n"
+                f"• <b>Было:</b> {html.escape(_format_diff_val(plan.old_value))}\n"
+                f"• <b>Станет:</b> {html.escape(_format_diff_val(plan.new_value))}\n"
                 f"• <b>Пояснение:</b> {html.escape(plan.explanation)}\n"
                 f"• <b>Операция с карточкой:</b> <code>{plan.image_operation}</code>\n\n"
                 f"Подтвердите применение или посмотрите предпросмотр:"

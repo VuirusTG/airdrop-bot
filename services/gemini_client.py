@@ -19,12 +19,20 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 429 or "429 RESOURCE_EXHAUSTED" in str(exc)
 
 
-async def generate_content(*, contents: str, config: Any):
+async def generate_content(*, contents: str | None = None, prompt: str | None = None, config: Any = None, temperature: float | None = None):
     """Generate content while keeping all calls inside the configured free-tier pace."""
     global _last_request_started
 
     if client is None:
         raise RuntimeError("GEMINI_API_KEY не настроен")
+
+    actual_contents = contents or prompt or ""
+    if config is None and temperature is not None:
+        try:
+            from google.genai import types
+            config = types.GenerateContentConfig(temperature=temperature)
+        except Exception:
+            pass
 
     async with _request_lock:
         for attempt in range(settings.LLM_MAX_RATE_RETRIES + 1):
@@ -37,7 +45,7 @@ async def generate_content(*, contents: str, config: Any):
             try:
                 return await client.aio.models.generate_content(
                     model=settings.LLM_MODEL,
-                    contents=contents,
+                    contents=actual_contents,
                     config=config,
                 )
             except Exception as exc:

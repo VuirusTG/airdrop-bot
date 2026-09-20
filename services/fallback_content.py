@@ -131,15 +131,13 @@ def fallback_generate_draft(
     context = _source_excerpt(raw_text)
     ecosystem = f" in the {chain} ecosystem" if chain else ""
     summary = (
-        f"{name} appears to have a new {category} opportunity{ecosystem}. "
-        f"The source reports: {context} "
-        "This draft was created without AI, so confirm all details on the official page before publishing."
+        f"{name} is featuring a new {category} campaign{ecosystem}. "
+        f"{context}"
     )
     instructions = "\n".join((
-        "1. Open the official project page using the link below.",
-        "2. Verify that the campaign is active and review its eligibility rules.",
-        "3. Follow only the tasks listed by the project on its official page.",
-        "4. Use a separate wallet and verify every transaction before signing.",
+        "1. Open the project portal and review campaign rules.",
+        "2. Complete eligible tasks and qualify for upcoming rewards.",
+        "3. Monitor official project channels for allocation updates.",
     ))
     return DraftResult(
         title=f"{name}: New {category.title()} Opportunity",

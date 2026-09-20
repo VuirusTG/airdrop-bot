@@ -71,7 +71,7 @@ class Settings:
     LLM_MAX_RATE_RETRIES: int = max(0, _int("LLM_MAX_RATE_RETRIES", 2))
     # Groq is the primary cloud model for filtering, drafting, and rework.
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     GROQ_MIN_REQUEST_INTERVAL_SECONDS: float = max(
         0.0, float(os.getenv("GROQ_MIN_REQUEST_INTERVAL_SECONDS", "2.1"))
     )

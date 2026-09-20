@@ -49,35 +49,45 @@ def _is_failed_generation(response: httpx.Response) -> bool:
     return bool(error.get("failed_generation")) or "failed to generate json" in message
 
 
+def _effective_model() -> str:
+    m = (settings.GROQ_MODEL or "").strip()
+    if not m or m == "openai/gpt-oss-20b":
+        return "llama-3.3-70b-versatile"
+    return m
+
+
 async def generate_json(
     *,
     system_instruction: str,
     contents: str,
-    temperature: float,
-    schema_name: str,
-    response_schema: dict[str, Any],
+    temperature: float = 0.2,
+    schema_name: str = "result",
+    response_schema: dict[str, Any] | None = None,
 ) -> str:
     global _last_request_started
 
     if not settings.GROQ_API_KEY:
         raise GroqError("GROQ_API_KEY не настроен")
 
-    payload = {
-        "model": settings.GROQ_MODEL,
+    payload: dict[str, Any] = {
+        "model": _effective_model(),
         "messages": [
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": contents},
         ],
         "temperature": temperature,
-        "response_format": {
+    }
+    if response_schema:
+        payload["response_format"] = {
             "type": "json_schema",
             "json_schema": {
                 "name": schema_name,
                 "strict": True,
                 "schema": response_schema,
             },
-        },
-    }
+        }
+    else:
+        payload["response_format"] = {"type": "json_object"}
     async with _request_lock:
         async with httpx.AsyncClient(timeout=45.0) as client:
             for attempt in range(settings.GROQ_MAX_RATE_RETRIES + 1):

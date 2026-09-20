@@ -41,6 +41,9 @@ SUPPORTED_TARGETS = {
     "image_background",
     "character",
     "layout",
+    "full_draft",
+    "post",
+    "draft",
 }
 
 SUPPORTED_OPERATIONS = {
@@ -103,6 +106,7 @@ RULES:
    - "tasks" (the whole list of tasks)
    - "task_1", "task_2", "task_3", "task_4", "task_5" (a specific task item)
    - "image_background" or "artwork" (visual style, background art, scene)
+   - "full_draft" (if user asks to rewrite, summarize, or rework the whole post/draft, or provides general feedback about post quality/content)
 
 2. Determine the operation:
    - "replace", "replace_list", "rewrite", "add", "remove", "shorten", "regenerate", "restyle"
@@ -282,6 +286,24 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             explanation="Генерация нового фонового арта через ИИ",
         )
 
+    # 8. Full draft rework / rewrite
+    if re.search(
+        r"^(?:перепиши|переделай|переработай|улучши|обнови|напиши|rework|rewrite)\s+(?:пост|текст|черновик|весь\s+пост|post|draft)?(?:\s+(?:нормальн\w*|по-человечески|заново|лучше|читабельн\w*))?.*$",
+        cmd,
+        re.IGNORECASE,
+    ) or re.search(r"^(?:нормальный\s+текст|перепиши|переделай|сделай\s+шаги|сделай\s+нормальный\s+текст.*)$", cmd, re.IGNORECASE):
+        return EditPlan(
+            target="full_draft",
+            operation="rewrite",
+            old_value=None,
+            new_value=cmd,
+            confidence=0.95,
+            requires_confirmation=False,
+            affected_components=["draft_data", "telegram_post", "social_card"],
+            image_operation="rerender_text",
+            explanation=f"Полная переработка черновика: {cmd}",
+        )
+
     return None
 
 
@@ -334,15 +356,15 @@ async def parse_intent_with_llm(command: str, current: DraftContent) -> EditPlan
 
     # Fallback to general rework if LLM unavailable
     return EditPlan(
-        target="tasks",
+        target="full_draft",
         operation="rewrite",
-        old_value=current.tasks,
-        new_value=current.tasks,
-        confidence=0.5,
-        requires_confirmation=True,
+        old_value=None,
+        new_value=command,
+        confidence=0.6,
+        requires_confirmation=False,
         affected_components=["draft_data", "telegram_post", "social_card"],
         image_operation="rerender_text",
-        explanation="Общая переработка черновика",
+        explanation=f"Переработка черновика по запросу: {command}",
     )
 
 
@@ -398,6 +420,126 @@ async def compress_or_correct_tasks(
     return [sanitize_task(t) for t in invalid_tasks]
 
 
+REWRITE_DRAFT_SYSTEM_PROMPT = """You are an elite crypto researcher and Telegram post editor for an exclusive airdrop channel.
+Your goal is to rework and elevate a draft into a sharp, professional, compelling publication-ready post based on the current draft context and the user's instructions.
+
+CRITICAL EDITORIAL RULES:
+1. NEVER output robotic disclaimers or boilerplate warnings such as:
+   - "This draft was created without AI..."
+   - "Confirm all details on the official page before publishing."
+   - "Review any active tasks or qualification criteria."
+   These are strictly forbidden.
+2. Title: Clean, punchy, exciting project title with category (e.g. "Lighter: Perpetual DEX Airdrop on Robinhood Chain").
+3. Description: 2-3 engaging, factual sentences explaining the project value, backers/ecosystem, and what makes this opportunity noteworthy.
+4. Tasks: Exactly 2 to 4 concrete, actionable qualification steps based on the project context.
+   - Each task MUST be <= 120 characters.
+   - Write clear, active verb actions (e.g. "Trade on the perpetual DEX to build onchain volume", "Bridge assets to Robinhood Chain via the official portal").
+   - NEVER use ellipsis ("..." or "…").
+   - NEVER use filler phrases ("etc.", "and more", "and so on").
+   - NO embedded numbering ("1.", "Step 1:").
+   - NO markdown formatting or emojis inside task strings.
+5. Potential Reward: Keep existing or extract if mentioned (e.g. "11M $LIT tokens ($30M pool)", "$1,000+", "Unconfirmed").
+6. Network: Ecosystem chain (e.g. "Robinhood Chain", "Base", "Solana", "Arbitrum", "Ethereum").
+7. Category: AIRDROP, TESTNET, or QUEST.
+
+Return ONLY a valid JSON object:
+{
+  "title": "<clean title>",
+  "category": "AIRDROP",
+  "description": "<2-3 sentence engaging summary>",
+  "tasks": [
+    "<actionable task 1>",
+    "<actionable task 2>",
+    "<actionable task 3>"
+  ],
+  "potential_reward": "<reward or null>",
+  "network": "<network or null>"
+}"""
+
+
+async def rewrite_draft_with_llm(current: DraftContent, instruction: str) -> DraftContent:
+    """Rewrite and elevate the entire draft using Groq with Gemini fallback."""
+    import copy
+    updated = copy.deepcopy(current)
+
+    user_context = (
+        f"CURRENT DRAFT:\n"
+        f"Title: {current.title}\n"
+        f"Category: {current.category}\n"
+        f"Description: {current.description}\n"
+        f"Tasks:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(current.tasks, 1)) + "\n"
+        f"Potential Reward: {current.potential_reward}\n"
+        f"Network: {current.network}\n"
+        f"Project Link: {current.project_link}\n\n"
+        f"USER INSTRUCTION / FEEDBACK:\n{instruction}\n\n"
+        "Generate the complete rewritten draft JSON:"
+    )
+
+    data = None
+    # 1. Groq
+    if settings.GROQ_API_KEY:
+        try:
+            resp_json = await generate_json(
+                system_instruction=REWRITE_DRAFT_SYSTEM_PROMPT,
+                contents=user_context,
+                temperature=0.3,
+                schema_name="draft_rewrite",
+            )
+            data = json.loads(resp_json)
+        except Exception as exc:
+            logger.warning("Groq draft rewrite failed: %s; trying Gemini", exc)
+
+    # 2. Gemini fallback
+    if data is None and settings.GEMINI_API_KEY:
+        try:
+            resp = await generate_content(
+                prompt=f"{REWRITE_DRAFT_SYSTEM_PROMPT}\n\n{user_context}",
+                temperature=0.3,
+            )
+            text = (resp.text or "").strip()
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0].strip()
+            data = json.loads(text)
+        except Exception as exc:
+            logger.warning("Gemini draft rewrite failed: %s", exc)
+
+    if isinstance(data, dict):
+        if data.get("title"):
+            updated.title = str(data["title"]).strip()
+        if data.get("category"):
+            updated.category = str(data["category"]).strip().upper()
+        if data.get("description"):
+            desc = str(data["description"]).strip()
+            desc = re.sub(r"This draft was created without AI[^\.]*\.?", "", desc, flags=re.IGNORECASE).strip()
+            updated.description = desc
+        if data.get("potential_reward"):
+            updated.potential_reward = str(data["potential_reward"]).strip()
+        if data.get("network"):
+            updated.network = str(data["network"]).strip()
+
+        raw_tasks = data.get("tasks")
+        if isinstance(raw_tasks, list) and raw_tasks:
+            sanitized = [sanitize_task(str(t)) for t in raw_tasks if str(t).strip()]
+            val_res = validate_tasks(sanitized)
+            if not val_res.is_valid:
+                logger.info("Rewritten tasks failed validation (%s), compressing...", val_res.error_summary)
+                corrected = await compress_or_correct_tasks(sanitized, val_res.error_summary)
+                val_res2 = validate_tasks(corrected)
+                if val_res2.is_valid:
+                    sanitized = corrected
+            if sanitized:
+                updated.tasks = sanitized[:5]
+
+        return updated
+
+    # Fallback if both LLMs unavailable: clean robotic disclaimers deterministically
+    clean_desc = re.sub(r"This draft was created without AI[^\.]*\.?", "", updated.description, flags=re.IGNORECASE).strip()
+    updated.description = clean_desc
+    return updated
+
+
 class EditorService:
     """Core Editor V2 engine orchestrating parsing, validation, application, and preview."""
 
@@ -428,6 +570,12 @@ class EditorService:
         target = plan.target.lower()
         op = plan.operation.lower()
         new_val = plan.new_value
+
+        # 0. Full Draft Rewrite / Post Rework
+        if target in ("full_draft", "post", "post_text", "draft"):
+            instruction = str(new_val) if new_val else plan.explanation
+            rewritten = await rewrite_draft_with_llm(new_content, instruction)
+            return rewritten, True, None
 
         # 1. Single Task Item (task_1, task_2, etc.)
         if target.startswith("task_"):
@@ -471,6 +619,17 @@ class EditorService:
                         return current, False, f"Задачи не прошли валидацию: {val_result2.error_summary}. Уточните список."
                     raw_list = corrected_list
                 new_content.tasks = raw_list[:5]
+            elif isinstance(new_val, str) and ("\n" in new_val or re.search(r"^\d+[\.\)]", new_val.strip())):
+                from services.draft_content import parse_legacy_instructions
+                parsed_tasks, _ = parse_legacy_instructions(new_val)
+                if parsed_tasks:
+                    val_result = validate_tasks(parsed_tasks)
+                    if not val_result.is_valid:
+                        parsed_tasks = await compress_or_correct_tasks(parsed_tasks, val_result.error_summary)
+                    new_content.tasks = parsed_tasks[:5]
+            elif isinstance(new_val, str) and new_val.strip():
+                rewritten_draft = await rewrite_draft_with_llm(new_content, f"Rewrite tasks only: {new_val}")
+                new_content.tasks = rewritten_draft.tasks
 
         # 3. Potential Reward
         elif target == "potential_reward":
