@@ -388,15 +388,14 @@ async def compress_or_correct_tasks(
             text = (resp.text or "").strip()
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
             parsed = json.loads(text)
             if isinstance(parsed, list):
                 return [sanitize_task(str(x)) for x in parsed if str(x).strip()]
         except Exception as exc:
             logger.warning("Gemini task correction pass failed: %s", exc)
 
-    return [sanitize_task(t)[:120].rstrip(" :;,-.") for t in invalid_tasks]
+    # If both Groq and Gemini failed, return sanitized tasks without silent slicing
+    return [sanitize_task(t) for t in invalid_tasks]
 
 
 class EditorService:

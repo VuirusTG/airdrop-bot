@@ -196,8 +196,10 @@ def parse_legacy_instructions(instructions_text: str | None) -> tuple[list[str],
         # Ignore boilerplate headers like "What to do:" or "Instructions:"
         if re.match(r"^(what to do|instructions|tasks|steps|how to qualify)[\s:]*$", cleaned, re.IGNORECASE):
             continue
-        if len(cleaned) >= 5:
-            # Clean trailing punctuation
+        # Ignore noise, placeholders (TBD, N/A), or text with fewer than 2 words / 6 letters
+        words = [w for w in re.split(r"\s+", cleaned) if any(c.isalpha() for c in w)]
+        alpha_count = sum(1 for c in cleaned if c.isalpha())
+        if len(words) >= 2 and alpha_count >= 6:
             cleaned = cleaned.rstrip(" :;,-.")
             tasks.append(cleaned)
         if len(tasks) == 5:
