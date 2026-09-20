@@ -43,6 +43,8 @@ async def _ensure_optional_columns(conn) -> None:
             "image_source": "VARCHAR(64)",
             "source_url": "TEXT",
             "project_url": "TEXT",
+            "content_json": "TEXT",
+            "edit_plan_json": "TEXT",
         },
     )
     await _ensure_columns(

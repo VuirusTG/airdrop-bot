@@ -32,41 +32,13 @@ def _telegram_post_url(message_id: int) -> str | None:
     return None
 
 
-def _shorten(value: str | None, limit: int) -> str:
-    text = " ".join((value or "").split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rsplit(" ", 1)[0].rstrip(".,;:") + "."
-
-
 def _telegram_photo_caption(draft: Draft) -> str:
-    """Keep a photo post inside Telegram's 1024-character caption limit."""
+    """Keep a photo post inside Telegram's 1024-character caption limit without artificial ellipsis."""
     full_text = draft.rendered_text()
     if len(full_text) <= TELEGRAM_CAPTION_LIMIT:
         return full_text
-
-    parts = [
-        f"🚀 {_shorten(draft.title, 140)}",
-        "",
-        _shorten(draft.summary, 280),
-        "",
-        "📝 What to do:",
-        _shorten(draft.instructions, 300),
-    ]
-    if draft.risk_note:
-        parts += ["", f"⚠️ Risk: {_shorten(draft.risk_note, 140)}"]
-    if draft.project_url:
-        parts += ["", f"🔗 Start here: {draft.project_url}"]
-
-    caption = "\n".join(parts)
-    if len(caption) <= TELEGRAM_CAPTION_LIMIT:
-        return caption
-
-    # Preserve the project URL even when an unusually long source draft is stored.
-    link = f"🔗 Start here: {draft.project_url}" if draft.project_url else ""
-    reserved = len(link) + (2 if link else 0)
-    body = caption[: TELEGRAM_CAPTION_LIMIT - reserved].rstrip()
-    return f"{body}\n\n{link}" if link else body
+    # Safely fit within 1024 characters without appending dots
+    return full_text[:TELEGRAM_CAPTION_LIMIT].rstrip()
 
 
 async def _publish_telegram(bot: Bot, project: Project, draft: Draft) -> PublishResult:

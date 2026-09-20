@@ -1,7 +1,10 @@
 import asyncio
+from dataclasses import asdict
 import html
+import json
 import logging
 import re
+import uuid
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -11,6 +14,8 @@ from sqlalchemy.orm import selectinload
 
 from bot.keyboards import (
     archive_keyboard,
+    edit_confirm_keyboard,
+    edit_preview_keyboard,
     open_in_x_keyboard,
     photo_studio_keyboard,
     review_keyboard,
@@ -20,11 +25,13 @@ from bot.keyboards import (
 )
 from config import settings
 from db.database import get_session
-from db.models import Draft, Project, ProjectStatus, PublishedPost
+from db.models import Draft, DraftSnapshot, Project, ProjectStatus, PublishedPost
 from ingestion.scheduler import source_scanner
 from publishing.dispatcher import publish_project
 from services.ai_rework import rework_draft
 from services.artwork_generator import STYLE_PRESETS, generate_artwork
+from services.draft_content import DraftContent, draft_to_content, sync_content_to_draft
+from services.editor_service import EditorService, EditPlan
 from services.image_rework import (
     build_ai_art_prompt,
     classify_rework_intent,
@@ -36,7 +43,9 @@ from services.llm_draft import DraftResult
 from services.media import ensure_draft_image, telegram_photo
 from services.project_image import discover_project_image
 from services.project_link import discover_project_link
-from services.social_card import THEME_COLORS, generate_social_card
+from services.social_card import THEME_COLORS, generate_social_card, render_social_card_from_content
+from services.task_validator import validate_tasks
+from services.version_manager import VersionManager
 from services.health import collect_system_health
 
 logger = logging.getLogger(__name__)
@@ -46,6 +55,7 @@ awaiting_feedback: dict[int, bool] = {}
 awaiting_upload: dict[int, int] = {}
 awaiting_steps: dict[int, int] = {}
 uploaded_tokens: dict[str, str] = {}
+pending_edits: dict[str, dict] = {}
 _manual_scan_task: asyncio.Task | None = None
 
 
@@ -183,7 +193,8 @@ async def _replace_review_message(
 
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
         if keyboard is None:
-            keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+            can_undo = await VersionManager.can_undo(session, draft.id)
+            keyboard = review_keyboard(project.id, previous_id, next_id, position, total, can_undo=can_undo)
 
         photo_obj = telegram_photo(draft.image_path) if draft.image_path else None
         current_has_photo = bool(callback.message.photo)
@@ -287,7 +298,8 @@ async def _open_review_queue(message: Message) -> None:
                 logger.warning("ensure_draft_image failed for project #%s: %s", project.id, exc)
 
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
-        keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+        can_undo = await VersionManager.can_undo(session, draft.id)
+        keyboard = review_keyboard(project.id, previous_id, next_id, position, total, can_undo=can_undo)
         caption = _review_caption(project, draft, position, total)
         sent = None
         photo_input = telegram_photo(draft.image_path) if draft.image_path else None
@@ -1014,16 +1026,144 @@ async def on_photo_message(message: Message):
     )
 
 
+async def _execute_and_apply_plan(
+    target_msg: Message,
+    session,
+    project: Project,
+    draft: Draft,
+    content: DraftContent,
+    plan: EditPlan,
+    user_command: str,
+) -> None:
+    updated_content, is_valid, err = await EditorService.apply_edit_plan(plan, content)
+    if not is_valid:
+        await target_msg.answer(
+            f"❌ <b>Не удалось применить изменения:</b>\n{html.escape(err or '')}\n\nЧерновик оставлен без изменений.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Handle image operations according to level
+    if plan.image_operation in ("generate_artwork", "new_artwork"):
+        preset = detect_preset(user_command)
+        art_prompt = build_ai_art_prompt(user_command, project.name)
+        seed = int(asyncio.get_event_loop().time()) % 100000
+        try:
+            art_path, art_provider = await generate_artwork(
+                prompt=art_prompt,
+                preset=preset,
+                seed=seed,
+            )
+            updated_content.artwork.path = art_path
+            updated_content.artwork.source = art_provider
+        except Exception as exc:
+            logger.warning("Failed to generate custom artwork: %s", exc)
+
+        card = await render_social_card_from_content(updated_content)
+        if card:
+            updated_content.artwork.path = card.path
+            updated_content.artwork.source = card.source
+    elif plan.image_operation in ("rerender_text", "local_edit"):
+        card = await render_social_card_from_content(updated_content)
+        if card:
+            updated_content.artwork.path = card.path
+            updated_content.artwork.source = card.source
+
+    # Save changes to draft
+    sync_content_to_draft(updated_content, draft)
+    draft.version = draft.version + 1
+    draft.rework_feedback = user_command
+    plan_dict = asdict(plan)
+    draft.edit_plan_json = json.dumps(plan_dict, ensure_ascii=False)
+
+    # Save snapshot
+    await VersionManager.save_snapshot(
+        session,
+        draft_id=draft.id,
+        project_id=project.id,
+        action=plan.explanation,
+        user_command=user_command,
+        edit_plan_json=draft.edit_plan_json,
+        content=updated_content,
+    )
+    await session.commit()
+
+    if draft.image_path:
+        try:
+            await ensure_draft_image(project, draft)
+            await session.commit()
+        except Exception:
+            pass
+
+    queue = await _review_queue(session)
+    position, total, previous_id, next_id = _queue_meta(queue, project.id)
+    can_undo = await VersionManager.can_undo(session, draft.id)
+    keyboard = review_keyboard(project.id, previous_id, next_id, position, total, can_undo=can_undo)
+    caption = _review_caption(project, draft, position, total)
+
+    if project.review_message_id and project.review_chat_id:
+        try:
+            await target_msg.bot.delete_message(
+                chat_id=project.review_chat_id,
+                message_id=project.review_message_id,
+            )
+        except Exception:
+            pass
+
+    if target_msg.reply_to_message:
+        try:
+            await target_msg.reply_to_message.delete()
+        except Exception:
+            pass
+
+    photo_to_send = telegram_photo(draft.image_path) if draft.image_path else None
+    sent = None
+    if photo_to_send:
+        try:
+            sent = await target_msg.answer_photo(
+                photo=photo_to_send,
+                caption=caption,
+                reply_markup=keyboard,
+            )
+        except Exception as exc:
+            logger.warning("Could not send updated photo card: %s; falling back to text", exc)
+            sent = await target_msg.answer(caption, reply_markup=keyboard)
+    else:
+        sent = await target_msg.answer(caption, reply_markup=keyboard)
+
+    project.review_chat_id = sent.chat.id
+    project.review_message_id = sent.message_id
+    await session.commit()
+
+    await target_msg.answer(
+        f"✅ <b>Изменения применены:</b> {html.escape(plan.explanation)}\n"
+        f"Сохранена версия v{draft.version}. При необходимости вы можете нажать «↩️ Отменить правку (Undo)».",
+        parse_mode="HTML",
+    )
+
+
 @router.message(F.reply_to_message, F.text)
 async def on_feedback_reply(message: Message):
     if not await _is_admin_message(message):
         return
     prompt_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-    if "(project #" not in prompt_text:
-        return
-    try:
-        project_id = int(prompt_text.split("(project #")[1].split(")")[0].strip())
-    except (ValueError, IndexError):
+    project_id = None
+    if "(project #" in prompt_text:
+        try:
+            project_id = int(prompt_text.split("(project #")[1].split(")")[0].strip())
+        except (ValueError, IndexError):
+            pass
+    elif "•  #" in prompt_text:
+        try:
+            project_id = int(prompt_text.split("•  #")[1].split("  •")[0].strip())
+        except (ValueError, IndexError):
+            pass
+    elif "#" in prompt_text:
+        match = re.search(r"#(\d+)", prompt_text)
+        if match:
+            project_id = int(match.group(1))
+
+    if not project_id:
         return
 
     awaiting_feedback.pop(project_id, None)
@@ -1034,7 +1174,7 @@ async def on_feedback_reply(message: Message):
         awaiting_steps.pop(message.from_user.id if message.from_user else 0, None)
         steps_lines = [line.strip() for line in feedback_text.splitlines() if line.strip()]
         if not steps_lines:
-            await message.answer("Шаги не распознаны. Отправьте 3 шага, каждый с новой строки.")
+            await message.answer("Шаги не распознаны. Отправьте от 1 до 5 шагов, каждый с новой строки.")
             return
 
         async with get_session() as session:
@@ -1042,46 +1182,65 @@ async def on_feedback_reply(message: Message):
             if not project or not project.latest_draft():
                 return
             previous_draft = project.latest_draft()
-            new_version = previous_draft.version + 1
-            loop_time = int(asyncio.get_event_loop().time())
+            content = draft_to_content(previous_draft, project)
 
-            social_card = await generate_social_card(
-                name=project.name,
-                category=project.category,
-                chain=project.chain,
-                instructions=previous_draft.instructions,
-                official_image_url=None,
-                project_url=project.project_url,
-                generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
-                potential_reward=previous_draft.potential_reward,
-                custom_steps=steps_lines[:3],
-            )
-            if not social_card:
-                await message.answer("Не удалось обновить шаги на карточке.")
+            is_valid, err, sanitized = validate_tasks(steps_lines[:5])
+            if not is_valid:
+                await message.answer(f"❌ Ошибка в шагах: {err}\nПопробуйте ещё раз.")
                 return
 
+            if not await VersionManager.can_undo(session, previous_draft.id):
+                await VersionManager.save_snapshot(
+                    session,
+                    draft_id=previous_draft.id,
+                    project_id=project.id,
+                    action="Исходный черновик",
+                    user_command=None,
+                    edit_plan_json=None,
+                    content=content,
+                )
+
+            content.tasks = sanitized
+            card = await render_social_card_from_content(content)
+            if card:
+                content.artwork.path = card.path
+                content.artwork.source = card.source
+
+            new_version = previous_draft.version + 1
             new_draft = Draft(
                 project_id=project.id,
                 version=new_version,
-                title=previous_draft.title,
-                summary=previous_draft.summary,
-                instructions=previous_draft.instructions,
-                potential_reward=previous_draft.potential_reward,
+                title=content.title,
+                summary=content.description,
+                instructions="\n".join(f"{i}. {t}" for i, t in enumerate(content.tasks, 1)),
+                potential_reward=content.potential_reward,
                 risk_note=previous_draft.risk_note,
                 twitter_text=previous_draft.twitter_text,
-                image_path=social_card.path,
-                image_source=social_card.source,
+                image_path=content.artwork.path,
+                image_source=content.artwork.source,
                 image_prompt=previous_draft.image_prompt,
                 source_url=project.source_url,
                 project_url=project.project_url,
-                rework_feedback=f"Custom card steps: {'; '.join(steps_lines[:3])}",
+                rework_feedback=f"Custom card steps: {'; '.join(sanitized)}",
+                content_json=content.to_json(),
             )
             project.drafts.append(new_draft)
             await session.commit()
 
+            await VersionManager.save_snapshot(
+                session,
+                draft_id=new_draft.id,
+                project_id=project.id,
+                action="Ручное обновление шагов",
+                user_command=feedback_text,
+                edit_plan_json=None,
+                content=content,
+            )
+
             queue = await _review_queue(session)
             position, total, previous_id, next_id = _queue_meta(queue, project.id)
-            keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
+            can_undo = await VersionManager.can_undo(session, new_draft.id)
+            keyboard = review_keyboard(project.id, previous_id, next_id, position, total, can_undo=can_undo)
             caption = _review_caption(project, new_draft, position, total)
 
             if project.review_message_id and project.review_chat_id:
@@ -1106,165 +1265,184 @@ async def on_feedback_reply(message: Message):
                 await session.commit()
             return
 
-    intent = classify_rework_intent(feedback_text)
-    logger.info("Rework intent for project #%s: '%s' (feedback: '%s')", project_id, intent, feedback_text)
-
+    # Standard Natural Language Edit via Editor V2
     async with get_session() as session:
         project = await _load_project(session, project_id)
         if not project or not project.latest_draft():
             await message.answer("Проект или черновик не найден.")
             return
-        previous_draft = project.latest_draft()
+        draft = project.latest_draft()
         if not project.project_url:
             project.project_url = await discover_project_link(
                 project.source_url, project.raw_data or "", project.name
             )
 
-        new_result = None
-        social_card = None
+        content = draft_to_content(draft, project)
 
-        if intent in ("text_only", "both"):
-            previous = DraftResult(
-                title=previous_draft.title,
-                summary=previous_draft.summary,
-                instructions=previous_draft.instructions,
-                potential_reward=previous_draft.potential_reward,
-                risk_note=previous_draft.risk_note,
-                twitter_text=previous_draft.twitter_text,
-                image_prompt=previous_draft.image_prompt,
-            )
-            try:
-                new_result, rework_provider = await rework_draft(
-                    project.name,
-                    project.raw_data,
-                    project.chain,
-                    project.source_url,
-                    project.project_url,
-                    previous,
-                    feedback_text,
-                )
-            except Exception as exc:
-                await session.rollback()
-                await message.answer(
-                    "Groq и резервный Gemini сейчас недоступны, поэтому переработка текста не выполнена. "
-                    "Текущий черновик сохранён без изменений.\n\n"
-                    f"Причина: {str(exc)[:500]}",
-                    reply_markup=review_keyboard(project.id),
-                )
-                return
-        else:
-            # intent == "image_only": Keep exact existing draft text!
-            new_result = DraftResult(
-                title=previous_draft.title,
-                summary=previous_draft.summary,
-                instructions=previous_draft.instructions,
-                potential_reward=previous_draft.potential_reward,
-                risk_note=previous_draft.risk_note,
-                twitter_text=previous_draft.twitter_text,
-                image_prompt=f"{previous_draft.image_prompt or ''}; reviewer visual request: {feedback_text}",
-            )
-
-        if intent in ("image_only", "both"):
-            try:
-                preset = detect_preset(feedback_text)
-                theme_color = detect_theme_color(feedback_text)
-                art_path = None
-                art_provider = "master"
-
-                if requests_image_rework(feedback_text) or preset:
-                    art_prompt = build_ai_art_prompt(feedback_text, project.name)
-                    seed = int(asyncio.get_event_loop().time()) % 100000
-                    art_path, art_provider = await generate_artwork(
-                        prompt=art_prompt,
-                        preset=preset,
-                        seed=seed,
-                    )
-
-                official_image = await discover_project_image(project.source_url)
-                img_prompt = f"{previous_draft.image_prompt or ''}; visual feedback: {feedback_text}".strip(" ;")
-                loop_time = int(asyncio.get_event_loop().time())
-                social_card = await generate_social_card(
-                    name=project.name,
-                    category=project.category,
-                    chain=project.chain,
-                    instructions=new_result.instructions,
-                    official_image_url=official_image.url if official_image else None,
-                    image_prompt=img_prompt,
-                    project_url=project.project_url,
-                    generation_key=f"project-{project.id}-v{previous_draft.version + 1}-{loop_time}",
-                    potential_reward=new_result.potential_reward,
-                    custom_artwork_path=art_path,
-                    theme_color=theme_color,
-                )
-            except Exception as exc:
-                logger.warning("Failed to generate new social card in rework: %s", exc)
-
-        new_draft = Draft(
-            project_id=project.id,
-            version=previous_draft.version + 1,
-            title=new_result.title,
-            summary=new_result.summary,
-            instructions=new_result.instructions,
-            potential_reward=new_result.potential_reward,
-            risk_note=new_result.risk_note,
-            twitter_text=new_result.twitter_text,
-            image_path=social_card.path if social_card else previous_draft.image_path,
-            image_source=social_card.source if social_card else previous_draft.image_source,
-            image_prompt=(
-                new_result.image_prompt if (social_card or intent in ("image_only", "both")) else previous_draft.image_prompt
-            ),
-            source_url=project.source_url,
-            project_url=project.project_url,
-            rework_feedback=feedback_text,
+        has_snaps = await session.execute(
+            select(DraftSnapshot.id).where(DraftSnapshot.draft_id == draft.id).limit(1)
         )
-        project.drafts.append(new_draft)
-        await session.commit()
+        if not has_snaps.scalar_one_or_none():
+            await VersionManager.save_snapshot(
+                session,
+                draft_id=draft.id,
+                project_id=project.id,
+                action="Исходный черновик",
+                user_command=None,
+                edit_plan_json=None,
+                content=content,
+            )
 
-        if new_draft.image_path:
+        plan = await EditorService.create_edit_plan(feedback_text, content)
+        logger.info("Editor V2 plan for project #%s: %s", project.id, plan)
+
+        if plan.requires_confirmation:
+            pending_id = uuid.uuid4().hex[:8]
+            pending_edits[pending_id] = {
+                "project_id": project.id,
+                "draft_id": draft.id,
+                "plan": plan,
+                "content": content,
+                "user_command": feedback_text,
+            }
+
+            diff_text = (
+                f"📋 <b>Предложен план изменений (требует подтверждения):</b>\n\n"
+                f"• <b>Объект:</b> <code>{html.escape(plan.target)}</code> ({plan.operation})\n"
+                f"• <b>Было:</b> {html.escape(str(plan.old_value or '—'))}\n"
+                f"• <b>Станет:</b> {html.escape(str(plan.new_value or '—'))}\n"
+                f"• <b>Пояснение:</b> {html.escape(plan.explanation)}\n"
+                f"• <b>Операция с карточкой:</b> <code>{plan.image_operation}</code>\n\n"
+                f"Подтвердите применение или посмотрите предпросмотр:"
+            )
+            await message.reply(
+                diff_text,
+                parse_mode="HTML",
+                reply_markup=edit_preview_keyboard(project.id, pending_id),
+            )
+            return
+
+        await _execute_and_apply_plan(message, session, project, draft, content, plan, feedback_text)
+
+
+@router.callback_query(F.data.startswith("preview_edit:"))
+async def on_preview_edit(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    parts = callback.data.split(":")
+    project_id = int(parts[1])
+    pending_id = parts[2]
+
+    pending = pending_edits.get(pending_id)
+    if not pending:
+        await callback.answer("Предпросмотр устарел или уже применён.", show_alert=True)
+        return
+
+    plan: EditPlan = pending["plan"]
+    content: DraftContent = pending["content"]
+    await callback.answer("Формирую предпросмотр...")
+
+    simulated_content, is_valid, err = await EditorService.apply_edit_plan(plan, content)
+    if not is_valid:
+        await callback.answer(f"Ошибка: {err}", show_alert=True)
+        return
+
+    card = await render_social_card_from_content(simulated_content)
+    post_preview = simulated_content.render_telegram_post()
+    text = (
+        f"👁 <b>ПРЕДПРОСМОТР КАРТОЧКИ И ПОСТА:</b>\n\n"
+        f"<b>План:</b> {html.escape(plan.explanation)}\n\n"
+        f"<b>Текст поста:</b>\n{html.escape(post_preview[:600])}"
+    )
+    kb = edit_confirm_keyboard(project_id, pending_id)
+    photo_input = telegram_photo(card.path) if card else None
+    if photo_input and callback.message:
+        await callback.bot.send_photo(
+            chat_id=callback.message.chat.id,
+            photo=photo_input,
+            caption=text[:1024],
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    elif callback.message:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("apply_edit:"))
+async def on_apply_edit(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    parts = callback.data.split(":")
+    project_id = int(parts[1])
+    pending_id = parts[2]
+
+    pending = pending_edits.pop(pending_id, None)
+    if not pending:
+        await callback.answer("Действие уже выполнено или устарело.", show_alert=True)
+        return
+
+    await callback.answer("Применяю изменения...")
+    plan: EditPlan = pending["plan"]
+    user_command: str = pending["user_command"]
+
+    async with get_session() as session:
+        project = await _load_project(session, project_id)
+        if not project or not project.latest_draft():
+            await callback.answer("Проект не найден.", show_alert=True)
+            return
+        draft = project.latest_draft()
+        content = draft_to_content(draft, project)
+        if callback.message:
+            await _execute_and_apply_plan(callback.message, session, project, draft, content, plan, user_command)
+
+
+@router.callback_query(F.data.startswith("cancel_edit:"))
+async def on_cancel_edit(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    parts = callback.data.split(":")
+    pending_id = parts[2] if len(parts) > 2 else ""
+    pending_edits.pop(pending_id, None)
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+    await callback.answer("Изменения отменены.")
+
+
+@router.callback_query(F.data.startswith("undo_edit:"))
+async def on_undo_edit(callback: CallbackQuery):
+    if not await _is_admin_callback(callback):
+        return
+    project_id = int(callback.data.split(":")[1])
+    await callback.answer("Откатываю к предыдущей версии...")
+
+    async with get_session() as session:
+        project = await _load_project(session, project_id)
+        if not project or not project.latest_draft():
+            await callback.answer("Проект не найден.", show_alert=True)
+            return
+        draft = project.latest_draft()
+
+        restored_content, status_msg = await VersionManager.undo(session, draft.id)
+        if not restored_content:
+            await callback.answer(status_msg or "Невозможно отменить.", show_alert=True)
+            return
+
+        if draft.image_path:
             try:
-                await ensure_draft_image(project, new_draft)
+                await ensure_draft_image(project, draft)
                 await session.commit()
             except Exception:
                 pass
 
         queue = await _review_queue(session)
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
-        keyboard = review_keyboard(project.id, previous_id, next_id, position, total)
-        caption = _review_caption(project, new_draft, position, total)
-
-        if project.review_message_id and project.review_chat_id:
-            try:
-                await message.bot.delete_message(
-                    chat_id=project.review_chat_id,
-                    message_id=project.review_message_id,
-                )
-            except Exception:
-                pass
-
-        if message.reply_to_message:
-            try:
-                await message.reply_to_message.delete()
-            except Exception:
-                pass
-
-        photo_to_send = telegram_photo(new_draft.image_path) if new_draft.image_path else None
-        sent = None
-        if photo_to_send:
-            try:
-                sent = await message.answer_photo(
-                    photo=photo_to_send,
-                    caption=caption,
-                    reply_markup=keyboard,
-                )
-            except Exception as exc:
-                logger.warning("Could not send rework photo card: %s; falling back to text", exc)
-                sent = await message.answer(caption, reply_markup=keyboard)
-        else:
-            sent = await message.answer(caption, reply_markup=keyboard)
-
-        project.review_chat_id = sent.chat.id
-        project.review_message_id = sent.message_id
-        await session.commit()
+        can_undo = await VersionManager.can_undo(session, draft.id)
+        keyboard = review_keyboard(project.id, previous_id, next_id, position, total, can_undo=can_undo)
+        await _replace_review_message(callback, project.id, keyboard=keyboard)
+        await callback.answer(status_msg, show_alert=True)
 
 
 

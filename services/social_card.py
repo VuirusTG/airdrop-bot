@@ -962,3 +962,35 @@ async def generate_social_card(
     except Exception as exc:
         logger.exception("Could not generate social card for %s: %s", name, exc)
         return None
+
+
+async def render_social_card_from_content(content: Any) -> SocialCard | None:
+    """Deterministic social card renderer directly from DraftContent.
+
+    Reads title, category, network, tasks, reward, artwork, and theme_color.
+    Never calls AI image models. Rerenders pure typography, HUD panels, and icons
+    over the selected artwork layer.
+    """
+    from services.draft_content import DraftContent
+    if not isinstance(content, DraftContent):
+        return None
+
+    art_meta = content.artwork
+    custom_art = art_meta.custom_artwork_path or (art_meta.path if (art_meta.path and not art_meta.path.endswith((".png", ".jpg"))) else None)
+    if custom_art and not Path(custom_art).is_file():
+        custom_art = None
+
+    return await generate_social_card(
+        name=content.title,
+        category=content.category,
+        chain=content.network,
+        instructions=content.render_instructions_text(),
+        official_image_url=None,
+        image_prompt=art_meta.prompt,
+        project_url=content.project_link,
+        generation_key=f"content-{art_meta.preset or 'std'}-{art_meta.theme_color}",
+        potential_reward=content.potential_reward,
+        custom_artwork_path=custom_art,
+        theme_color=art_meta.theme_color,
+        custom_steps=content.tasks,
+    )

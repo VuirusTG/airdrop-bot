@@ -9,37 +9,84 @@ def review_keyboard(
     next_id: int | None = None,
     position: int | None = None,
     total: int | None = None,
+    can_undo: bool = False,
 ) -> InlineKeyboardMarkup:
     counter = f"📋 {position}/{total}" if position and total else "📋 Review queue"
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="◀️ Previous",
+                callback_data=f"review_prev:{project_id}",
+            ),
+            InlineKeyboardButton(
+                text=counter,
+                callback_data=f"review_info:{project_id}",
+            ),
+            InlineKeyboardButton(
+                text="Next ▶️",
+                callback_data=f"review_next:{project_id}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(text="✅ Approve", callback_data=f"approve:{project_id}"),
+            InlineKeyboardButton(text="🔁 Rework", callback_data=f"rework:{project_id}"),
+            InlineKeyboardButton(text="🗑 Delete", callback_data=f"delete:{project_id}"),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🎨 Настроить фото",
+                callback_data=f"studio_open:{project_id}",
+            ),
+            InlineKeyboardButton(
+                text="🔄 Быстрый цвет",
+                callback_data=f"regen_image:{project_id}",
+            ),
+        ],
+    ]
+    if can_undo:
+        rows.append([
+            InlineKeyboardButton(
+                text="↩️ Отменить правку (Undo)",
+                callback_data=f"undo_edit:{project_id}",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def edit_preview_keyboard(project_id: int, pending_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="◀️ Previous",
-                    callback_data=f"review_prev:{project_id}",
-                ),
-                InlineKeyboardButton(
-                    text=counter,
-                    callback_data=f"review_info:{project_id}",
-                ),
-                InlineKeyboardButton(
-                    text="Next ▶️",
-                    callback_data=f"review_next:{project_id}",
+                    text="👁 Предпросмотр карточки",
+                    callback_data=f"preview_edit:{project_id}:{pending_id}",
                 ),
             ],
             [
-                InlineKeyboardButton(text="✅ Approve", callback_data=f"approve:{project_id}"),
-                InlineKeyboardButton(text="🔁 Rework", callback_data=f"rework:{project_id}"),
-                InlineKeyboardButton(text="🗑 Delete", callback_data=f"delete:{project_id}"),
-            ],
-            [
                 InlineKeyboardButton(
-                    text="🎨 Настроить фото",
-                    callback_data=f"studio_open:{project_id}",
+                    text="✅ Применить",
+                    callback_data=f"apply_edit:{project_id}:{pending_id}",
                 ),
                 InlineKeyboardButton(
-                    text="🔄 Быстрый цвет",
-                    callback_data=f"regen_image:{project_id}",
+                    text="❌ Отмена",
+                    callback_data=f"cancel_edit:{project_id}:{pending_id}",
+                ),
+            ],
+        ]
+    )
+
+
+def edit_confirm_keyboard(project_id: int, pending_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Применить",
+                    callback_data=f"apply_edit:{project_id}:{pending_id}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"cancel_edit:{project_id}:{pending_id}",
                 ),
             ],
         ]

@@ -75,11 +75,22 @@ class Draft(Base):
     source_url: Mapped[str] = mapped_column(Text, nullable=True)
     project_url: Mapped[str] = mapped_column(Text, nullable=True)
     rework_feedback: Mapped[str] = mapped_column(Text, nullable=True)
+    content_json: Mapped[str] = mapped_column(Text, nullable=True)
+    edit_plan_json: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped["Project"] = relationship(back_populates="drafts")
+    snapshots: Mapped[list["DraftSnapshot"]] = relationship(back_populates="draft", order_by="DraftSnapshot.version")
 
     def rendered_text(self) -> str:
+        if self.content_json:
+            try:
+                import json
+                from services.draft_content import DraftContent
+                content = DraftContent.from_json(self.content_json)
+                return content.render_telegram_post()
+            except Exception:
+                pass
         parts = [f"🚀 {self.title}", "", self.summary, "", "📝 What to do:", self.instructions]
         if self.potential_reward:
             parts += ["", f"💰 Potential reward: {self.potential_reward}"]
@@ -104,6 +115,22 @@ class Draft(Base):
         if self.twitter_text:
             parts += ["", "2. Черновик для твиттера", "", self.twitter_text]
         return "\n".join(parts)
+
+
+class DraftSnapshot(Base):
+    __tablename__ = "draft_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    action: Mapped[str] = mapped_column(String(64))
+    user_command: Mapped[str] = mapped_column(Text, nullable=True)
+    edit_plan_json: Mapped[str] = mapped_column(Text, nullable=True)
+    content_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    draft: Mapped["Draft"] = relationship(back_populates="snapshots")
 
 
 
