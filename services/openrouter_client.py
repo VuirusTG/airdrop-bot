@@ -36,11 +36,12 @@ async def generate_chat_completion(
     response_format: dict[str, Any] | None = None,
     timeout: float = OPENROUTER_DEFAULT_TIMEOUT,
 ) -> str:
-    """Send a chat completion request to OpenRouter API."""
+    """Send a chat completion request to OpenRouter API with native dual-model fallback."""
     if not settings.OPENROUTER_API_KEY:
         raise ValueError("OPENROUTER_API_KEY is not configured")
 
     target_model = model or settings.OPENROUTER_MODEL
+    fallback_model = getattr(settings, "OPENROUTER_FALLBACK_MODEL", "qwen/qwen-2.5-72b-instruct:free")
     url = f"{settings.OPENROUTER_BASE_URL}/chat/completions"
 
     headers = {
@@ -50,8 +51,15 @@ async def generate_chat_completion(
         "Content-Type": "application/json",
     }
 
+    # OpenRouter native model-routing fallback: tries target_model, then fallback_model
+    models_list = [target_model]
+    if fallback_model and fallback_model != target_model:
+        models_list.append(fallback_model)
+
     payload: dict[str, Any] = {
         "model": target_model,
+        "models": models_list,
+        "route": "fallback",
         "messages": messages,
         "temperature": temperature,
     }
@@ -60,11 +68,20 @@ async def generate_chat_completion(
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         for attempt in range(1, 4):
+            # On final retry attempt, explicitly switch the primary target to the fallback model
+            if attempt == 3 and fallback_model and fallback_model != target_model:
+                payload["model"] = fallback_model
+
             try:
                 resp = await client.post(url, headers=headers, json=payload)
                 if resp.status_code == 429:
-                    wait_sec = attempt * 2.5
-                    logger.warning("OpenRouter rate limited (429), backing off for %.1fs (attempt %d/3)", wait_sec, attempt)
+                    wait_sec = attempt * 2.0
+                    logger.warning(
+                        "OpenRouter rate limited (429) for %s, backing off for %.1fs (attempt %d/3)",
+                        payload["model"],
+                        wait_sec,
+                        attempt,
+                    )
                     await asyncio.sleep(wait_sec)
                     continue
 
@@ -75,15 +92,17 @@ async def generate_chat_completion(
                     raise ValueError(f"OpenRouter returned empty choices: {data}")
 
                 content = choices[0]["message"]["content"]
+                used_model = data.get("model", payload["model"])
+                logger.info("OpenRouter response generated successfully via %s", used_model)
                 return (content or "").strip()
 
             except httpx.HTTPStatusError as exc:
-                logger.warning("OpenRouter HTTP error %s: %s", exc.response.status_code, exc.response.text[:300])
+                logger.warning("OpenRouter HTTP error %s for %s: %s", exc.response.status_code, payload["model"], exc.response.text[:300])
                 if attempt == 3:
                     raise
                 await asyncio.sleep(attempt * 1.5)
             except (httpx.RequestError, asyncio.TimeoutError) as exc:
-                logger.warning("OpenRouter network error on attempt %d: %s", attempt, exc)
+                logger.warning("OpenRouter network error on attempt %d for %s: %s", attempt, payload["model"], exc)
                 if attempt == 3:
                     raise
                 await asyncio.sleep(attempt * 1.5)

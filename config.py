@@ -80,6 +80,7 @@ class Settings:
     # OpenRouter for conversational AI draft editing and generation
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip()
     OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+    OPENROUTER_FALLBACK_MODEL: str = os.getenv("OPENROUTER_FALLBACK_MODEL", "qwen/qwen-2.5-72b-instruct:free")
     OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
     FILTER_MIN_SCORE: float = float(os.getenv("FILTER_MIN_SCORE", "4.0"))
     FILTER_VERSION: int = max(1, _int("FILTER_VERSION", 2))

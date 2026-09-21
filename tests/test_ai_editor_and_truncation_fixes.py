@@ -202,6 +202,34 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta["image_operation"], "rerender_text")
         self.assertIn("OpenRouter", meta["provider"])
 
+    @patch("httpx.AsyncClient.post")
+    async def test_openrouter_dual_model_payload(self, mock_post):
+        """Verify OpenRouter client includes fallback model routing in request payload."""
+        from services.openrouter_client import generate_chat_completion
+        from config import settings
+
+        mock_resp = unittest.mock.MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": '{"status": "ok"}'}}],
+            "model": "meta-llama/llama-3.3-70b-instruct:free",
+        }
+        mock_post.return_value = mock_resp
+
+        with patch.object(settings, "OPENROUTER_API_KEY", "test_key"):
+            res = await generate_chat_completion([{"role": "user", "content": "hello"}])
+            self.assertEqual(res, '{"status": "ok"}')
+
+            call_args = mock_post.call_args
+            json_body = call_args.kwargs["json"]
+            self.assertEqual(json_body["model"], "meta-llama/llama-3.3-70b-instruct:free")
+            self.assertEqual(json_body["models"], [
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "qwen/qwen-2.5-72b-instruct:free",
+            ])
+            self.assertEqual(json_body["route"], "fallback")
+
 
 if __name__ == "__main__":
     unittest.main()
