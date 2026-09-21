@@ -44,8 +44,12 @@ async def generate_chat_completion(
     fallback_model = getattr(settings, "OPENROUTER_FALLBACK_MODEL", "qwen/qwen-2.5-72b-instruct:free")
     url = f"{settings.OPENROUTER_BASE_URL}/chat/completions"
 
+    api_key = settings.OPENROUTER_API_KEY.strip().strip("'\"")
+    if api_key.lower().startswith("bearer "):
+        api_key = api_key[7:].strip()
+
     headers = {
-        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "HTTP-Referer": "https://github.com/VuirusTG/airdrop-bot",
         "X-Title": "AirdropBot",
         "Content-Type": "application/json",

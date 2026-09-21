@@ -52,21 +52,44 @@ async def _ensure_optional_columns(conn) -> None:
         "projects",
         {"filter_version": "INTEGER DEFAULT 1", "project_url": "TEXT"},
     )
-    if conn.dialect.name == "postgresql":
-        try:
-            await conn.execute(text("ALTER TABLE draft_snapshots ALTER COLUMN action TYPE VARCHAR(255)"))
-        except Exception:
-            pass
+    def check_draft_snapshots_action(sync_conn):
+        insp = inspect(sync_conn)
+        if not insp.has_table("draft_snapshots"):
+            return False
+        for col in insp.get_columns("draft_snapshots"):
+            if col["name"] == "action":
+                col_type = str(col.get("type", "")).upper()
+                if "255" in col_type or "TEXT" in col_type:
+                    return False
+                return True
+        return False
+
+    needs_widen = await conn.run_sync(check_draft_snapshots_action)
+    if needs_widen and conn.dialect.name == "postgresql":
+        async with conn.begin_nested():
+            try:
+                await conn.execute(text("ALTER TABLE draft_snapshots ALTER COLUMN action TYPE VARCHAR(255)"))
+            except Exception:
+                pass
 
 
 async def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
     def get_existing_columns(sync_conn):
-        return {column["name"] for column in inspect(sync_conn).get_columns(table)}
+        insp = inspect(sync_conn)
+        if not insp.has_table(table):
+            return set()
+        return {column["name"] for column in insp.get_columns(table)}
 
     existing = await conn.run_sync(get_existing_columns)
+    if not existing:
+        return
     for name, sql_type in columns.items():
         if name not in existing:
-            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+            async with conn.begin_nested():
+                try:
+                    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+                except Exception:
+                    pass
 
 
 @asynccontextmanager

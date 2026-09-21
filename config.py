@@ -78,7 +78,8 @@ class Settings:
     GROQ_MAX_RATE_RETRIES: int = max(0, _int("GROQ_MAX_RATE_RETRIES", 2))
 
     # OpenRouter for conversational AI draft editing and generation
-    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip()
+    _openrouter_raw: str = os.getenv("OPENROUTER_API_KEY", "").strip().strip("'\"")
+    OPENROUTER_API_KEY: str = _openrouter_raw[7:].strip() if _openrouter_raw.lower().startswith("bearer ") else _openrouter_raw
     OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
     OPENROUTER_FALLBACK_MODEL: str = os.getenv("OPENROUTER_FALLBACK_MODEL", "qwen/qwen-2.5-72b-instruct:free")
     OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
