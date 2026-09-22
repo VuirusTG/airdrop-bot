@@ -4,6 +4,7 @@ services:
     runtime: docker
     plan: free
     healthCheckPath: /healthz
+    autoDeploy: true
     envVars:
       - key: BOT_TOKEN
         sync: false
