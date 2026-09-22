@@ -132,3 +132,32 @@ async def generate_json(
         response_format={"type": "json_object"},
     )
     return _extract_json_text(raw_response)
+
+
+async def check_connection() -> tuple[bool, str]:
+    """Check OpenRouter API key validity and connectivity."""
+    if not settings.OPENROUTER_API_KEY:
+        return False, "API-ключ OPENROUTER_API_KEY не задан в переменных окружения"
+    api_key = settings.OPENROUTER_API_KEY.strip().strip("'\"")
+    if api_key.lower().startswith("bearer "):
+        api_key = api_key[7:].strip()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "https://github.com/VuirusTG/airdrop-bot",
+        "X-Title": "AirdropBot",
+    }
+    url = f"{settings.OPENROUTER_BASE_URL}/auth/key"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json().get("data", {})
+                label = data.get("label") or "active"
+                limit = data.get("limit")
+                usage = data.get("usage", 0)
+                limit_info = f", limit: ${limit}" if limit is not None else ""
+                return True, f"OpenRouter API активен [{label}{limit_info}], модель: {settings.OPENROUTER_MODEL}"
+            return False, f"OpenRouter API вернул HTTP {resp.status_code}: {resp.text[:120]}"
+    except Exception as exc:
+        return False, f"Ошибка сети при проверке OpenRouter: {str(exc)[:160]}"
+

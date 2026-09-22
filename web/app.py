@@ -177,7 +177,25 @@ async def healthz():
         "service": "airdrop-bot",
         "mode": "webhook" if settings.WEBHOOK_BASE_URL else "local",
         "database": "postgresql" if settings.DATABASE_URL.startswith("postgresql+") else "sqlite",
+        "openrouter_configured": bool(settings.OPENROUTER_API_KEY),
+        "openrouter_model": settings.OPENROUTER_MODEL,
+        "openrouter_fallback": getattr(settings, "OPENROUTER_FALLBACK_MODEL", None),
     }
+
+
+@app.get("/api/openrouter/check")
+async def check_openrouter_status():
+    """Verify live connectivity and API key validity with OpenRouter."""
+    from services.openrouter_client import check_connection
+    working, detail = await check_connection()
+    return {
+        "configured": bool(settings.OPENROUTER_API_KEY),
+        "working": working,
+        "detail": detail,
+        "primary_model": settings.OPENROUTER_MODEL,
+        "fallback_model": getattr(settings, "OPENROUTER_FALLBACK_MODEL", None),
+    }
+
 
 
 @app.post("/telegram/webhook")
