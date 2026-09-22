@@ -135,9 +135,9 @@ async def generate_json(
 
 
 async def check_connection() -> tuple[bool, str]:
-    """Check OpenRouter API key validity and connectivity."""
+    """Check OpenRouter API key validity, active models, and connectivity."""
     if not settings.OPENROUTER_API_KEY:
-        return False, "API-ключ OPENROUTER_API_KEY не задан в переменных окружения"
+        return False, "API-ключ OPENROUTER_API_KEY не задан в переменных окружения Render"
     api_key = settings.OPENROUTER_API_KEY.strip().strip("'\"")
     if api_key.lower().startswith("bearer "):
         api_key = api_key[7:].strip()
@@ -154,10 +154,25 @@ async def check_connection() -> tuple[bool, str]:
                 data = resp.json().get("data", {})
                 label = data.get("label") or "active"
                 limit = data.get("limit")
-                usage = data.get("usage", 0)
-                limit_info = f", limit: ${limit}" if limit is not None else ""
-                return True, f"OpenRouter API активен [{label}{limit_info}], модель: {settings.OPENROUTER_MODEL}"
-            return False, f"OpenRouter API вернул HTTP {resp.status_code}: {resp.text[:120]}"
+                limit_info = f", лимит: ${limit}" if limit is not None else ""
+                fallback_model = getattr(settings, "OPENROUTER_FALLBACK_MODEL", "qwen/qwen-2.5-72b-instruct:free")
+                return True, (
+                    f"Подключен ({label}{limit_info})\n"
+                    f"   • Основная модель: {settings.OPENROUTER_MODEL}\n"
+                    f"   • Резервная модель: {fallback_model}\n"
+                    f"   • Dual-model failover: активен"
+                )
+            if resp.status_code == 401:
+                return False, "Ошибка 401 (Unauthorized): неверный API-ключ. Проверьте переменную OPENROUTER_API_KEY в панели Render."
+            if resp.status_code == 402:
+                return False, "Ошибка 402 (Payment Required): закончился баланс или исчерпана квота на OpenRouter."
+            if resp.status_code == 429:
+                return False, "Ошибка 429 (Rate Limit): превышен лимит запросов в минуту. Бот автоматически задействует резервную модель Qwen 2.5."
+            if resp.status_code in (502, 503, 504):
+                return False, f"Ошибка {resp.status_code}: серверы OpenRouter временно недоступны. Сработает Groq/Gemini fallback."
+            return False, f"HTTP {resp.status_code}: {resp.text[:120]}"
+    except httpx.TimeoutException:
+        return False, "Таймаут соединения с сервером openrouter.ai (сработает автоповтор через Groq/Gemini)"
     except Exception as exc:
-        return False, f"Ошибка сети при проверке OpenRouter: {str(exc)[:160]}"
+        return False, f"Сетевая ошибка при проверке OpenRouter: {str(exc)[:160]}"
 

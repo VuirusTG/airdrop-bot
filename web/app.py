@@ -469,6 +469,7 @@ async def health(live: bool = Query(False)):
         )
         items = [
             {"name": "Database", "working": True, "detail": f"{database_name} configured"},
+            {"name": "OpenRouter", "working": bool(settings.OPENROUTER_API_KEY), "detail": "Configured" if settings.OPENROUTER_API_KEY else "Not configured"},
             {"name": "Groq", "working": bool(settings.GROQ_API_KEY), "detail": "Configured" if settings.GROQ_API_KEY else "Local fallback enabled"},
             {"name": "Gemini", "working": bool(settings.GEMINI_API_KEY), "detail": "Configured" if settings.GEMINI_API_KEY else "Optional"},
             {"name": "Telegram", "working": bool(settings.BOT_TOKEN), "detail": "Bot token configured"},
@@ -481,7 +482,7 @@ async def health(live: bool = Query(False)):
     finally:
         await bot.session.close()
     items = [item.__dict__ for item in status.sources]
-    items += [item.__dict__ for item in (status.telegram, status.x, status.groq, status.gemini, status.cloudflare)]
+    items += [item.__dict__ for item in (status.telegram, status.x, status.openrouter, status.groq, status.gemini, status.cloudflare)]
     return {"items": items, "recommendations": status.recommendations, "live": True}
 
 

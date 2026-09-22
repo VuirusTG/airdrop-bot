@@ -296,6 +296,97 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
         res = await render_social_card_from_content(content)
         self.assertIsNotNone(res)
 
+    async def test_openrouter_check_connection_and_health(self):
+        """Verify OpenRouter connection verification, model details, and error diagnostics."""
+        from services.health import check_openrouter
+        from services.openrouter_client import check_connection
+
+        # 1. Without API key
+        with patch("config.settings.OPENROUTER_API_KEY", ""):
+            ok, detail = await check_connection()
+            self.assertFalse(ok)
+            self.assertIn("не задан", detail)
+
+        # 2. With 200 OK
+        from unittest.mock import MagicMock
+        mock_resp_200 = MagicMock()
+        mock_resp_200.status_code = 200
+        mock_resp_200.json.return_value = {
+            "data": {"label": "TelegramBotKey", "limit": 10}
+        }
+        mock_resp_200.text = "{}"
+        with patch("config.settings.OPENROUTER_API_KEY", "test_key"), \
+             patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_resp_200
+            ok, detail = await check_connection()
+            self.assertTrue(ok)
+            self.assertIn("Подключен", detail)
+            self.assertIn("meta-llama/llama-3.3-70b-instruct:free", detail)
+            self.assertIn("qwen/qwen-2.5-72b-instruct:free", detail)
+            self.assertIn("Dual-model failover", detail)
+
+            item = await check_openrouter()
+            self.assertTrue(item.working)
+            self.assertEqual(item.name, "OpenRouter")
+
+        # 3. With 401 error
+        mock_resp_401 = MagicMock()
+        mock_resp_401.status_code = 401
+        mock_resp_401.text = "Unauthorized"
+        with patch("config.settings.OPENROUTER_API_KEY", "test_key"), \
+             patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_resp_401
+            ok, detail = await check_connection()
+            self.assertFalse(ok)
+            self.assertIn("401", detail)
+            self.assertIn("OPENROUTER_API_KEY", detail)
+
+        # 4. With 429 rate limit
+        mock_resp_429 = MagicMock()
+        mock_resp_429.status_code = 429
+        mock_resp_429.text = "Rate limit exceeded"
+        with patch("config.settings.OPENROUTER_API_KEY", "test_key"), \
+             patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_resp_429
+            ok, detail = await check_connection()
+            self.assertFalse(ok)
+            self.assertIn("429", detail)
+            self.assertIn("Qwen", detail)
+
+    async def test_admin_system_status_openrouter_format(self):
+        """Verify that on_system_status formats OpenRouter health, models, and error help."""
+        from bot.handlers.admin_review import on_system_status
+        from services.health import HealthItem, SystemHealth
+
+        mock_bot = AsyncMock()
+        mock_msg = AsyncMock()
+        mock_msg.bot = mock_bot
+        mock_msg.from_user.id = 123456
+        mock_progress = AsyncMock()
+        mock_msg.answer.return_value = mock_progress
+
+        fake_health = SystemHealth(
+            sources=[HealthItem("RSS: cryptonews.com", True, "HTTP 200, записей: 10")],
+            telegram=HealthItem("Telegram", True, "@bot -> Channel"),
+            x=HealthItem("X", False, "No OAuth"),
+            openrouter=HealthItem("OpenRouter", True, "Подключен (TelegramBotKey)\n   • Основная модель: meta-llama/llama-3.3-70b-instruct:free\n   • Резервная модель: qwen/qwen-2.5-72b-instruct:free\n   • Dual-model failover: активен"),
+            groq=HealthItem("Groq", True, "Groq API доступен"),
+            gemini=HealthItem("Gemini", True, "модель доступна"),
+            cloudflare=HealthItem("Cloudflare Images", False, "не настроен"),
+            recommendations=["Все основные компоненты работают."],
+        )
+
+        with patch("bot.handlers.admin_review.collect_system_health", return_value=fake_health):
+            await on_system_status(mock_msg)
+            mock_progress.edit_text.assert_called_once()
+            call_text = mock_progress.edit_text.call_args[0][0]
+            self.assertIn("OpenRouter (Основной ИИ): ✅", call_text)
+            self.assertIn("llama-3.3-70b-instruct:free", call_text)
+            self.assertIn("qwen/qwen-2.5-72b-instruct:free", call_text)
+            self.assertIn("Справка по ошибкам OpenRouter:", call_text)
+            self.assertIn("401 (Unauthorized)", call_text)
+            self.assertIn("429 (Rate Limit)", call_text)
+
 
 if __name__ == "__main__":
     unittest.main()

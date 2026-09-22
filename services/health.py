@@ -12,6 +12,7 @@ from publishing.x import check_x_connection
 from services.cloudflare_image import check_connection as check_cloudflare_connection
 from services.gemini_client import client as gemini_client
 from services.groq_client import check_connection as check_groq_connection
+from services.openrouter_client import check_connection as check_openrouter_connection
 
 
 @dataclass(frozen=True)
@@ -26,8 +27,9 @@ class SystemHealth:
     sources: list[HealthItem]
     telegram: HealthItem
     x: HealthItem
-    gemini: HealthItem
+    openrouter: HealthItem
     groq: HealthItem
+    gemini: HealthItem
     cloudflare: HealthItem
     recommendations: list[str]
 
@@ -156,6 +158,11 @@ async def check_gemini() -> HealthItem:
         return HealthItem("Gemini", False, detail[:200])
 
 
+async def check_openrouter() -> HealthItem:
+    working, detail = await check_openrouter_connection()
+    return HealthItem("OpenRouter", working, detail)
+
+
 async def check_groq() -> HealthItem:
     working, detail = await check_groq_connection()
     return HealthItem("Groq", working, detail)
@@ -170,8 +177,9 @@ def _recommendations(
     sources: list[HealthItem],
     telegram: HealthItem,
     x: HealthItem,
-    gemini: HealthItem,
+    openrouter: HealthItem,
     groq: HealthItem,
+    gemini: HealthItem,
     cloudflare: HealthItem,
 ) -> list[str]:
     recommendations: list[str] = []
@@ -196,13 +204,17 @@ def _recommendations(
         recommendations.append(
             "Настроить X OAuth Read and Write; до этого использовать кнопку Open in X."
         )
+    if not openrouter.working:
+        recommendations.append(
+            f"Проверить OpenRouter AI: {openrouter.detail}"
+        )
     if not groq.working:
         recommendations.append(
-            "Проверить GROQ_API_KEY, GROQ_MODEL и бесплатную квоту основного AI-провайдера."
+            "Проверить GROQ_API_KEY, GROQ_MODEL и бесплатную квоту резервного AI-провайдера Groq."
         )
-    if not gemini.working and not groq.working:
+    if not openrouter.working and not groq.working and not gemini.working:
         recommendations.append(
-            "Резервный Gemini тоже недоступен; до восстановления обоих API используется локальный шаблон."
+            "Все AI-провайдеры (OpenRouter, Groq, Gemini) недоступны; используется локальный шаблон генерации."
         )
     if not cloudflare.working:
         recommendations.append(
@@ -214,12 +226,13 @@ def _recommendations(
 
 
 async def collect_system_health(bot: Bot) -> SystemHealth:
-    sources, telegram, x_status, gemini, groq, cloudflare = await asyncio.gather(
+    sources, telegram, x_status, openrouter, groq, gemini, cloudflare = await asyncio.gather(
         check_sources(),
         check_telegram(bot),
         check_x_connection(),
-        check_gemini(),
+        check_openrouter(),
         check_groq(),
+        check_gemini(),
         check_cloudflare(),
     )
     x = HealthItem("X", x_status[0], x_status[1])
@@ -227,8 +240,9 @@ async def collect_system_health(bot: Bot) -> SystemHealth:
         sources=sources,
         telegram=telegram,
         x=x,
-        gemini=gemini,
+        openrouter=openrouter,
         groq=groq,
+        gemini=gemini,
         cloudflare=cloudflare,
-        recommendations=_recommendations(sources, telegram, x, gemini, groq, cloudflare),
+        recommendations=_recommendations(sources, telegram, x, openrouter, groq, gemini, cloudflare),
     )

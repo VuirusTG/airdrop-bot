@@ -1564,14 +1564,27 @@ async def on_system_status(message: Message):
             "",
             f"2. Telegram: {'✅' if health.telegram.working else '❌'} {health.telegram.detail}",
             f"3. X/Twitter: {'✅' if health.x.working else '❌'} {health.x.detail}",
-            f"4. Groq (основной AI): {'✅' if health.groq.working else '❌'} {health.groq.detail}",
-            f"5. Gemini (резерв): {'✅' if health.gemini.working else '❌'} {health.gemini.detail}",
-            f"6. Cloudflare Images: {'✅' if health.cloudflare.working else '❌'} {health.cloudflare.detail}",
+            f"4. OpenRouter (Основной ИИ): {'✅' if health.openrouter.working else '❌'}\n   {health.openrouter.detail}",
+            f"5. Groq (резерв ИИ #1): {'✅' if health.groq.working else '❌'} {health.groq.detail}",
+            f"6. Gemini (резерв ИИ #2): {'✅' if health.gemini.working else '❌'} {health.gemini.detail}",
+            f"7. Cloudflare Images: {'✅' if health.cloudflare.working else '❌'} {health.cloudflare.detail}",
             "",
-            "7. Рекомендации:",
+            "8. Рекомендации:",
         ]
     )
     lines.extend(f"• {recommendation}" for recommendation in health.recommendations)
+
+    lines.extend(
+        [
+            "",
+            "ℹ️ Справка по ошибкам OpenRouter:",
+            "• 401 (Unauthorized): Неверный API-ключ. Проверьте переменную OPENROUTER_API_KEY в панели Render.",
+            "• 402 (Payment Required): Исчерпан баланс на OpenRouter (если модель платная).",
+            "• 429 (Rate Limit): Превышен лимит запросов в минуту. Бот автоматически задействует резервную модель Qwen 2.5.",
+            "• 502/503/504: Серверы OpenRouter недоступны. Сработает аварийный fallback на Groq/Gemini.",
+            "• Таймаут: Долгий ответ сети. Запрос будет повторен автоматически.",
+        ]
+    )
     await progress.edit_text("\n".join(lines))
 
 
