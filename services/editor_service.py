@@ -144,15 +144,15 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
     """Fast regex-based intent parsing for unambiguous commands without LLM latency."""
     cmd = command.strip()
 
-    # 1. Change potential reward: "Измени Potential Rewards с $2500+ на $1000+" / "Измени Potential rewards на фото на "$1000+"" / "Поменяй награду на $500"
+    # 1. Change potential reward: "Измени Potential Rewards с $2500+ на $1000+" / "Измени Potential rewards на фото на $1000+" / "Поменяй награду на $500"
     m_rew = re.search(
-        r"(?:измени|поменяй|смени|поставь|change|update|set)\s+(?:(?:на\s+)?(?:фото|картинке|карточке|баннере)\s+)?(?:potential\s+rewards?|наград\w*|reward)(?:\s+(?:на\s+)?(?:фото|картинке|карточке|баннере))?\s+(?:с\s+[^\s]+\s+)?на\s+[\"']?([$€£]?\d+[\w,+]*|\$?[A-Za-z0-9+]+)[\"']?",
+        r"(?:измени|поменяй|смени|поставь|change|update|set)\s+(?:(?:на\s+)?(?:фото|картинке|карточке|баннере)\s+)?(?:potential\s+rewards?|наград\w*|reward)(?:\s+(?:на\s+)?(?:фото|картинке|карточке|баннере))?\s*(?:с\s+[^\s]+\s+)?на\s*[:\s]*[\"']?([^\"'\n]+)[\"']?",
         cmd,
         re.IGNORECASE,
     )
     if m_rew:
         new_val = m_rew.group(1).strip()
-        if not new_val.startswith("$") and new_val[0].isdigit():
+        if not new_val.startswith("$") and new_val and new_val[0].isdigit():
             new_val = f"${new_val}"
         return EditPlan(
             target="potential_reward",
@@ -164,6 +164,26 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             affected_components=["draft_data", "telegram_post", "social_card"],
             image_operation="rerender_text",
             explanation=f"Изменение награды на {new_val}",
+        )
+
+    # 1b. Twitter edit: "Перепиши твит на: ...", "Измени твиттер на: ...", "Обнови твит"
+    m_tw = re.search(
+        r"(?:измени|поменяй|перепиши|обнови|сделай|set|change|rewrite)\s+(?:твиттер|твит|twitter|tweet|x)(?:\s+на)?\s*[:\s]*(.+)",
+        cmd,
+        re.IGNORECASE,
+    )
+    if m_tw:
+        new_tw = re.sub(r"^(?:на\s*[:\s]*|[:\s]+)", "", m_tw.group(1)).strip()
+        return EditPlan(
+            target="twitter",
+            operation="replace",
+            old_value=current.twitter_text,
+            new_value=new_tw,
+            confidence=0.98,
+            requires_confirmation=False,
+            affected_components=["draft_data", "twitter_post"],
+            image_operation="none",
+            explanation="Обновление текста для Twitter",
         )
 
     # 2. Change network: "Смени сеть на Solana" / "Поменяй network на Base"
@@ -715,6 +735,10 @@ class EditorService:
             else:
                 new_content.artwork.prompt = val_str
                 plan.image_operation = "new_artwork"
+
+        # 10. Twitter Draft
+        elif target in ("twitter", "twitter_text", "tweet", "x"):
+            new_content.twitter_text = str(new_val).strip() if new_val else None
 
         # Final check on tasks
         final_val = validate_tasks(new_content.tasks)

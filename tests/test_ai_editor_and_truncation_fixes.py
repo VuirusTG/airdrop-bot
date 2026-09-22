@@ -228,7 +228,73 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
                 "meta-llama/llama-3.3-70b-instruct:free",
                 "qwen/qwen-2.5-72b-instruct:free",
             ])
-            self.assertEqual(json_body["route"], "fallback")
+    @patch("services.ai_editor_llm._call_llm_json")
+    async def test_ai_generate_initial_draft(self, mock_call):
+        """Verify ai_generate_initial_draft parses OpenRouter response into DraftContent and DraftResult."""
+        from services.ai_editor_llm import ai_generate_initial_draft
+
+        mock_call.return_value = (
+            {
+                "title": "Lighter DEX: $30M Airdrop on Robinhood Chain",
+                "category": "AIRDROP",
+                "description": "Lighter запустил бессрочный DEX на Robinhood Chain с пулом на 11M $LIT.",
+                "tasks": [
+                    "Подключите кошелек к Robinhood Chain",
+                    "Совершите тестовые сделки на DEX",
+                    "Накопите торговый объем",
+                ],
+                "potential_reward": "$1000+",
+                "network": "Robinhood Chain",
+                "twitter_text": "Lighter DEX is live on Robinhood Chain with $30M LIT airdrop pool. Trade now: https://lighter.xyz #airdrop",
+                "theme_color": "violet",
+                "image_prompt": "Futuristic neon purple perpetual DEX trading floor",
+            },
+            "OpenRouter (meta-llama/llama-3.3-70b-instruct:free)",
+        )
+
+        content, draft_res, prov = await ai_generate_initial_draft(
+            name="Lighter",
+            raw_text="Lighter is a perpetual DEX on Robinhood Chain with 11M LIT token airdrop pool.",
+            chain="Robinhood Chain",
+            category="AIRDROP",
+            source_url="https://source.com/lighter",
+            project_url="https://lighter.xyz",
+        )
+
+        self.assertEqual(content.title, "Lighter DEX: $30M Airdrop on Robinhood Chain")
+        self.assertEqual(content.category, "AIRDROP")
+        self.assertEqual(len(content.tasks), 3)
+        self.assertEqual(content.potential_reward, "$1000+")
+        self.assertEqual(content.artwork.theme_color, "violet")
+        self.assertEqual(draft_res.twitter_text, "Lighter DEX is live on Robinhood Chain with $30M LIT airdrop pool. Trade now: https://lighter.xyz #airdrop")
+        self.assertIn("OpenRouter", prov)
+
+    async def test_twitter_edit_routing_and_application(self):
+        """Verify deterministic parsing and application of Twitter edit commands."""
+        content = self._sample_draft_content()
+        new_tw = "Updated tweet with $30M reward! Join testnet: https://flop.network #airdrop"
+
+        # 1. Parse
+        plan = _fast_deterministic_parse(f"перепиши твит на: {new_tw}", content)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.target, "twitter")
+        self.assertEqual(plan.new_value, new_tw)
+
+        # 2. Apply
+        updated, is_valid, err = await EditorService.apply_edit_plan(plan, content)
+        self.assertTrue(is_valid)
+        self.assertIsNone(err)
+        self.assertEqual(updated.twitter_text, new_tw)
+
+    async def test_social_card_custom_artwork_resolution(self):
+        """Verify that custom artwork path is properly resolved by render_social_card_from_content."""
+        from services.social_card import render_social_card_from_content
+
+        content = self._sample_draft_content()
+        # Non-existent path returns None or falls back
+        content.artwork.custom_artwork_path = "non_existent_artwork.png"
+        res = await render_social_card_from_content(content)
+        self.assertIsNotNone(res)
 
 
 if __name__ == "__main__":

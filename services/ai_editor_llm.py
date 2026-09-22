@@ -257,3 +257,100 @@ async def ai_edit_draft(
             meta["explanation"] = f"Правка черновика: {instruction[:40]}"
 
     return updated, meta
+
+
+async def ai_generate_initial_draft(
+    name: str,
+    raw_text: str,
+    chain: str | None = None,
+    category: str = "AIRDROP",
+    source_url: str | None = None,
+    project_url: str | None = None,
+):
+    """Generate initial draft via OpenRouter (Llama 3.3 70B primary, Qwen 2.5 72B fallback).
+
+    Produces publication-ready content:
+    - Telegram in crisp Russian with 3-4 numbered actionable tasks
+    - Twitter in punchy English (<= 280 chars with project link)
+    - Social card artwork theme color and image prompt
+    """
+    from services.draft_content import ArtworkMetadata, LayoutMetadata
+    from services.llm_draft import DraftResult
+
+    user_prompt = (
+        f"Project Name: {name}\n"
+        f"Detected Category: {category}\n"
+        f"Ecosystem Chain / Network: {chain or 'Unknown'}\n"
+        f"Verified Public Project Link: {project_url or 'None'}\n"
+        f"Private Source URL: {source_url or 'None'}\n\n"
+        f"RAW SOURCE DATA / ANNOUNCEMENT:\n{raw_text[:7000]}\n\n"
+        "Generate the publication-ready JSON draft now strictly adhering to the requirements."
+    )
+
+    data, provider = await _call_llm_json(SYSTEM_PROMPT_INITIAL_DRAFT, user_prompt)
+    if isinstance(data, dict):
+        title = str(data.get("title") or name).strip()
+        cat = str(data.get("category") or category).strip().upper()
+        desc = str(data.get("description") or "").strip()
+        desc = re.sub(r"This draft was created without AI[^\.]*\.?", "", desc, flags=re.IGNORECASE).strip()
+
+        raw_tasks = data.get("tasks") or []
+        sanitized_tasks = [sanitize_task(str(t)) for t in raw_tasks if str(t).strip()]
+        val_res = validate_tasks(sanitized_tasks)
+        if not val_res.is_valid:
+            sanitized_tasks = [t.rstrip(".,;…").strip() for t in sanitized_tasks if len(t) <= 120]
+        if not sanitized_tasks:
+            sanitized_tasks = [f"Visit official {name} portal", "Complete verification or testnet tasks"]
+
+        potential_reward = str(data.get("potential_reward") or "").strip() or None
+        network = str(data.get("network") or chain or "").strip() or None
+        twitter_text = str(data.get("twitter_text") or "").strip() or None
+        if twitter_text and len(twitter_text) > 280:
+            twitter_text = twitter_text[:279].rsplit(" ", 1)[0] + "…"
+
+        theme_color = str(data.get("theme_color") or "lime").lower().strip()
+        if theme_color not in {"lime", "cyan", "violet", "gold", "red", "orange"}:
+            theme_color = "lime"
+
+        image_prompt = str(data.get("image_prompt") or "").strip() or None
+
+        content = DraftContent(
+            title=title,
+            category=cat,
+            description=desc,
+            tasks=sanitized_tasks[:5],
+            potential_reward=potential_reward,
+            network=network,
+            project_link=project_url,
+            links=[project_url] if project_url else [],
+            twitter_text=twitter_text,
+            source_url=source_url,
+            artwork=ArtworkMetadata(
+                theme_color=theme_color,
+                prompt=image_prompt,
+            ),
+            layout=LayoutMetadata(),
+        )
+
+        draft_result = DraftResult(
+            title=title,
+            summary=desc,
+            instructions=content.render_instructions_text(),
+            potential_reward=potential_reward,
+            risk_note=None,
+            twitter_text=twitter_text,
+            image_prompt=image_prompt,
+        )
+
+        return content, draft_result, provider
+
+    # Fallback to local heuristic
+    from services.fallback_content import fallback_generate_draft
+    from services.draft_content import draft_to_content
+
+    fb_draft = fallback_generate_draft(name, raw_text, chain, category, project_url)
+    content = draft_to_content(fb_draft, None)
+    content.project_link = project_url
+    content.source_url = source_url
+    return content, fb_draft, "local"
+

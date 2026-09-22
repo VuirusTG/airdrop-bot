@@ -1060,7 +1060,7 @@ async def _execute_and_apply_plan(
         return
 
     # Handle image operations according to level
-    color = detect_theme_color(user_command)
+    color = detect_theme_color(user_command) or (updated_content.artwork.theme_color if updated_content.artwork else None)
     if color:
         updated_content.artwork.theme_color = color
 
@@ -1076,6 +1076,7 @@ async def _execute_and_apply_plan(
             )
             updated_content.artwork.path = art_path
             updated_content.artwork.source = art_provider
+            updated_content.artwork.custom_artwork_path = art_path
         except Exception as exc:
             logger.warning("Failed to generate custom artwork: %s", exc)
 
@@ -1138,6 +1139,9 @@ async def _execute_and_apply_plan(
 
     photo_to_send = telegram_photo(draft.image_path) if draft.image_path else None
     sent = None
+    caption = _review_caption(project, draft, position, total)
+    twitter_in_caption = bool(draft.twitter_text and draft.twitter_text.strip() in caption)
+
     if photo_to_send:
         try:
             sent = await target_msg.answer_photo(
@@ -1155,6 +1159,15 @@ async def _execute_and_apply_plan(
     project.review_message_id = sent.message_id
     await session.commit()
 
+    if draft.twitter_text and not twitter_in_caption and photo_to_send:
+        try:
+            await target_msg.answer(
+                f"🐦 <b>2. Черновик для Twitter (X):</b>\n\n{draft.twitter_text.strip()}",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
     await target_msg.answer(
         f"✅ <b>Изменения применены:</b> {html.escape(plan.explanation)}\n"
         f"Сохранена версия v{draft.version}. При необходимости вы можете нажать «↩️ Отменить правку (Undo)».",
@@ -1162,28 +1175,41 @@ async def _execute_and_apply_plan(
     )
 
 
-@router.message(F.reply_to_message, F.text)
+@router.message(F.text, ~F.text.startswith("/"))
 async def on_feedback_reply(message: Message):
     if not await _is_admin_message(message):
         return
-    prompt_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    prompt_text = ""
     project_id = None
-    if "(project #" in prompt_text:
-        try:
-            project_id = int(prompt_text.split("(project #")[1].split(")")[0].strip())
-        except (ValueError, IndexError):
-            pass
-    elif "•  #" in prompt_text:
-        try:
-            project_id = int(prompt_text.split("•  #")[1].split("  •")[0].strip())
-        except (ValueError, IndexError):
-            pass
-    elif "#" in prompt_text:
-        match = re.search(r"#(\d+)", prompt_text)
-        if match:
-            project_id = int(match.group(1))
+    if message.reply_to_message:
+        prompt_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+        if "(project #" in prompt_text:
+            try:
+                project_id = int(prompt_text.split("(project #")[1].split(")")[0].strip())
+            except (ValueError, IndexError):
+                pass
+        elif "•  #" in prompt_text:
+            try:
+                project_id = int(prompt_text.split("•  #")[1].split("  •")[0].strip())
+            except (ValueError, IndexError):
+                pass
+        elif "#" in prompt_text:
+            match = re.search(r"#(\d+)", prompt_text)
+            if match:
+                project_id = int(match.group(1))
+
+    # If message is not an explicit reply, resolve project from awaiting_feedback or active queue
+    if not project_id:
+        if awaiting_feedback:
+            project_id = next(iter(awaiting_feedback.keys()))
+        else:
+            async with get_session() as session:
+                queue = await _review_queue(session)
+                if queue:
+                    project_id = queue[0].id
 
     if not project_id:
+        await message.answer("ℹ️ Нет активного черновика для редактирования. Вызовите /review для просмотра очереди.")
         return
 
     awaiting_feedback.pop(project_id, None)

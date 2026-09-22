@@ -976,7 +976,11 @@ async def render_social_card_from_content(content: Any) -> SocialCard | None:
         return None
 
     art_meta = content.artwork
-    custom_art = art_meta.custom_artwork_path or (art_meta.path if (art_meta.path and not art_meta.path.endswith((".png", ".jpg"))) else None)
+    custom_art = art_meta.custom_artwork_path
+    if not custom_art and art_meta.path:
+        p = Path(art_meta.path)
+        if p.is_file() and "generated" not in p.parts:
+            custom_art = str(p)
     if custom_art and not Path(custom_art).is_file():
         custom_art = None
 

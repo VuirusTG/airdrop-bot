@@ -101,21 +101,45 @@ async def _draft_with_fallbacks(
     source_url: str | None,
     project_url: str | None,
 ):
+    if settings.OPENROUTER_API_KEY:
+        try:
+            from services.ai_editor_llm import ai_generate_initial_draft
+            content, draft_res, prov = await ai_generate_initial_draft(
+                name=name,
+                raw_text=raw_text,
+                chain=chain,
+                category=category,
+                source_url=source_url,
+                project_url=project_url,
+            )
+            return draft_res, prov, content
+        except Exception as exc:
+            logger.warning("OpenRouter initial draft failed: %s; falling back", exc)
+
     if provider == "groq":
         try:
-            return await generate_groq_draft(
+            draft_res = await generate_groq_draft(
                 name, raw_text, chain, source_url, project_url
-            ), "groq"
+            )
+            from services.draft_content import draft_to_content
+            content = draft_to_content(draft_res, None)
+            return draft_res, "groq", content
         except Exception as exc:
             _pause_groq_for_scan(exc)
 
     if provider in {"gemini", "groq"} and _gemini_available_for_scan():
         try:
-            return await generate_draft(name, raw_text, chain, source_url, project_url), "gemini"
+            draft_res = await generate_draft(name, raw_text, chain, source_url, project_url)
+            from services.draft_content import draft_to_content
+            content = draft_to_content(draft_res, None)
+            return draft_res, "gemini", content
         except Exception as exc:
             _pause_gemini_for_scan(exc)
 
-    return fallback_generate_draft(name, raw_text, chain, category, project_url), "local"
+    fb_res = fallback_generate_draft(name, raw_text, chain, category, project_url)
+    from services.draft_content import draft_to_content
+    content = draft_to_content(fb_res, None)
+    return fb_res, "local", content
 
 
 async def process_raw_signal(
@@ -180,7 +204,7 @@ async def process_raw_signal(
 
         project_url = await discover_project_link(source_url, raw_text, name)
         project.project_url = project_url
-        draft_result, provider = await _draft_with_fallbacks(
+        draft_result, provider, content = await _draft_with_fallbacks(
             provider,
             name,
             raw_text,
@@ -199,6 +223,8 @@ async def process_raw_signal(
             image_prompt=draft_result.image_prompt,
             project_url=project_url,
             potential_reward=draft_result.potential_reward,
+            theme_color=content.artwork.theme_color if content and content.artwork else None,
+            custom_steps=content.tasks if content and content.tasks else None,
         )
         image_path = social_card.path if social_card else official_image.url if official_image else None
         image_source = social_card.source if social_card else official_image.source if official_image else None
@@ -215,6 +241,7 @@ async def process_raw_signal(
             image_prompt=draft_result.image_prompt,
             source_url=source_url,
             project_url=project_url,
+            content_json=content.to_json() if content else None,
         )
         project.drafts.append(draft)
         project.status = ProjectStatus.PENDING_REVIEW
@@ -230,12 +257,15 @@ async def process_raw_signal(
                 pass
 
         photo_input = telegram_photo(draft.image_path) if draft.image_path else None
+        caption = _review_caption(project, draft)
+        twitter_in_caption = bool(draft.twitter_text and draft.twitter_text.strip() in caption)
+
         if photo_input is not None:
             try:
                 message = await bot.send_photo(
                     chat_id=settings.ADMIN_USER_ID,
                     photo=photo_input,
-                    caption=_review_caption(project, draft),
+                    caption=caption,
                     reply_markup=review_keyboard(project.id),
                 )
             except Exception as exc:
@@ -254,6 +284,19 @@ async def process_raw_signal(
         project.review_chat_id = message.chat.id
         project.review_message_id = message.message_id
         await session.commit()
+
+        # If Twitter text was not included in the photo caption (e.g. caption reached 1024 chars),
+        # send it as an explicit companion message so it is NEVER hidden!
+        if draft.twitter_text and not twitter_in_caption and photo_input is not None:
+            try:
+                await bot.send_message(
+                    chat_id=settings.ADMIN_USER_ID,
+                    text=f"🐦 <b>2. Черновик для Twitter (X) [#{project.id}]:</b>\n\n{draft.twitter_text.strip()}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
         return PipelineResult("review", project, provider)
 
 
@@ -274,6 +317,8 @@ def _review_caption(project: Project, draft: Draft) -> str:
         lines += ["", f"⚠️ {draft.risk_note.strip()}"]
     if draft.project_url:
         lines += ["", f"🔗 {draft.project_url}"]
+    if draft.twitter_text:
+        lines += ["", "🐦 Twitter (X):", draft.twitter_text.strip()]
     text = "\n".join(lines).strip()
     return text if len(text) <= 1024 else text[:1019].rsplit(" ", 1)[0] + "…"
 
