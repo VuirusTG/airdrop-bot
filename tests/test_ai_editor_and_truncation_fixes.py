@@ -237,11 +237,11 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
             {
                 "title": "Lighter DEX: $30M Airdrop on Robinhood Chain",
                 "category": "AIRDROP",
-                "description": "Lighter запустил бессрочный DEX на Robinhood Chain с пулом на 11M $LIT.",
+                "description": "Lighter has launched its perpetual DEX on Robinhood Chain with an 11M $LIT reward pool.",
                 "tasks": [
-                    "Подключите кошелек к Robinhood Chain",
-                    "Совершите тестовые сделки на DEX",
-                    "Накопите торговый объем",
+                    "Connect wallet to Robinhood Chain",
+                    "Execute testnet swaps on the DEX",
+                    "Accumulate eligible trading volume",
                 ],
                 "potential_reward": "$1000+",
                 "network": "Robinhood Chain",

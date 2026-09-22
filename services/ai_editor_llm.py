@@ -19,16 +19,17 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_INITIAL_DRAFT = """You are a top-tier crypto researcher and social media director.
 Analyze the raw crypto opportunity signal and generate a publication-ready editorial draft for Telegram and Twitter.
+ALL public-facing copy (both Telegram and Twitter) MUST be written in natural, fluent English.
 
-TELEGRAM REQUIREMENTS (Russian):
-- Title: Clear, scroll-stopping title with project name, e.g. "🔥 Lighter DEX: $30M LIT Airdrop & Testnet".
-- Description: 2-3 engaging, concise sentences in natural, crisp Russian explaining what the project is, why it matters, and the value proposition. Never use robotic boilerplate like "This draft was created without AI".
-- Tasks: 3-5 concrete actionable numbered steps in Russian (each step <= 120 chars, starting with an action verb, no ellipsis, no filler).
+TELEGRAM REQUIREMENTS (English):
+- Title: Clear, scroll-stopping title in English with project name, e.g. "🔥 Lighter DEX: $30M LIT Airdrop & Testnet".
+- Description: 2-3 engaging, concise sentences in natural, crisp English explaining what the project is, why it matters, and the value proposition. Never use robotic boilerplate like "This draft was created without AI".
+- Tasks: 3-5 concrete actionable numbered steps in English (each step <= 120 chars, starting with an action verb, no ellipsis, no filler).
 - Potential Reward: Clear realistic reward statement, e.g. "$1000+", "11M $LIT Pool", "Points & TGE Token Allocation".
 - Network: Chain name (e.g. "Arbitrum", "Base", "Solana", "Ethereum", "EVM").
 
 TWITTER / X REQUIREMENTS (English):
-- Single ready-to-post tweet, STRICTLY <= 280 characters.
+- Single ready-to-post tweet, STRICTLY <= 280 characters in English.
 - Scroll-stopping hook on line 1.
 - Brief context + 1 compact action.
 - Include verified project URL exactly once.
@@ -40,13 +41,13 @@ IMAGE METADATA:
 
 Respond ONLY with valid JSON:
 {
-  "title": "<engaging title>",
+  "title": "<engaging English title>",
   "category": "AIRDROP" | "TESTNET" | "QUEST" | "POINTS",
-  "description": "<2-3 concise Russian sentences>",
-  "tasks": ["<step 1>", "<step 2>", "<step 3>"],
+  "description": "<2-3 concise English sentences>",
+  "tasks": ["<step 1 in English>", "<step 2 in English>", "<step 3 in English>"],
   "potential_reward": "<e.g. $1000+ or null>",
   "network": "<network name or null>",
-  "twitter_text": "<ready tweet <= 280 chars>",
+  "twitter_text": "<ready tweet in English <= 280 chars>",
   "theme_color": "lime" | "cyan" | "violet" | "gold" | "red" | "orange",
   "image_prompt": "<English visual background prompt>"
 }"""
@@ -91,9 +92,9 @@ EXAMPLES OF USER INTENT:
 
 RULES:
 - Maintain factual integrity: do not invent false URLs or seed phrase requests.
-- Tasks: max 5 steps, <= 120 chars each, no ellipsis ("..."), clear actionable verbs.
-- Twitter: <= 280 characters.
-- Telegram text in natural Russian, Twitter in natural English.
+- Tasks: max 5 steps, <= 120 chars each, no ellipsis ("..."), clear actionable verbs in English.
+- Twitter: <= 280 characters in English.
+- ALL public-facing text (title, description, tasks, potential reward, twitter_text) MUST be in natural, fluent English.
 
 Respond ONLY with valid JSON:
 {
@@ -270,7 +271,7 @@ async def ai_generate_initial_draft(
     """Generate initial draft via OpenRouter (Llama 3.3 70B primary, Qwen 2.5 72B fallback).
 
     Produces publication-ready content:
-    - Telegram in crisp Russian with 3-4 numbered actionable tasks
+    - Telegram in crisp, engaging English with 3-4 numbered actionable tasks
     - Twitter in punchy English (<= 280 chars with project link)
     - Social card artwork theme color and image prompt
     """
@@ -284,7 +285,7 @@ async def ai_generate_initial_draft(
         f"Verified Public Project Link: {project_url or 'None'}\n"
         f"Private Source URL: {source_url or 'None'}\n\n"
         f"RAW SOURCE DATA / ANNOUNCEMENT:\n{raw_text[:7000]}\n\n"
-        "Generate the publication-ready JSON draft now strictly adhering to the requirements."
+        "Generate the publication-ready JSON draft now. All public fields (title, description, tasks, potential_reward, twitter_text) MUST be written strictly in natural, fluent English."
     )
 
     data, provider = await _call_llm_json(SYSTEM_PROMPT_INITIAL_DRAFT, user_prompt)
