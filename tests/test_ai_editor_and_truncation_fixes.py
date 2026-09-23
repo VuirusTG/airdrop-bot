@@ -543,6 +543,108 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
             can_undo = await VersionManager.can_undo(session, latest.id)
             self.assertTrue(can_undo)
 
+    async def test_remove_and_update_risk_note(self):
+        """Verify that 'убери раздел Risk с поста для телеграмма' cleanly removes risk_note."""
+        content = self._sample_draft_content()
+        content.risk_note = "Airdrop allocations and tokenomics are not yet finalized."
+        
+        # Verify initial rendering contains Risk section
+        initial_post = content.render_telegram_post()
+        self.assertIn("⚠️ Risk:", initial_post)
+        self.assertIn("Airdrop allocations", initial_post)
+
+        # 1. Fast deterministic parse for exact user query
+        cmd = "убери раздел Risk с поста для телеграмма"
+        plan = _fast_deterministic_parse(cmd, content)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.target, "risk_note")
+        self.assertEqual(plan.operation, "remove")
+        self.assertIsNone(plan.new_value)
+        self.assertEqual(plan.image_operation, "none")
+
+        # 2. Apply plan
+        updated, ok, err = await EditorService.apply_edit_plan(plan, content)
+        self.assertTrue(ok)
+        self.assertIsNone(updated.risk_note)
+
+        # 3. Verify Telegram post rendering has NO Risk block
+        rendered_tg = updated.render_telegram_post()
+        self.assertNotIn("⚠️ Risk:", rendered_tg)
+        self.assertNotIn("Airdrop allocations", rendered_tg)
+        # Verify other fields remain intact
+        self.assertEqual(updated.potential_reward, content.potential_reward)
+        self.assertEqual(updated.title, content.title)
+        self.assertEqual(updated.tasks, content.tasks)
+
+        # 4. Variations test
+        variations = [
+            "удали риск",
+            "убери риск с поста",
+            "удали блок risk",
+            "remove risk",
+            "удали раздел risk",
+            "убери предупреждение о риске",
+        ]
+        for v in variations:
+            p = _fast_deterministic_parse(v, content)
+            self.assertIsNotNone(p, f"Failed to parse variation: {v}")
+            self.assertEqual(p.target, "risk_note")
+            self.assertEqual(p.operation, "remove")
+
+        # 5. Update risk test
+        update_cmd = "измени риск на: Высокий риск потери газа в тестнете"
+        p_up = _fast_deterministic_parse(update_cmd, content)
+        self.assertIsNotNone(p_up)
+        self.assertEqual(p_up.target, "risk_note")
+        self.assertEqual(p_up.operation, "replace")
+        self.assertEqual(p_up.new_value, "Высокий риск потери газа в тестнете")
+
+        up_content, up_ok, _ = await EditorService.apply_edit_plan(p_up, content)
+        self.assertTrue(up_ok)
+        self.assertEqual(up_content.risk_note, "Высокий риск потери газа в тестнете")
+        self.assertIn("⚠️ Risk: Высокий риск потери газа в тестнете", up_content.render_telegram_post())
+
+    async def test_ai_edit_draft_handles_risk_removal_and_preservation(self):
+        """Verify ai_edit_draft removes risk when asked and preserves it when unmentioned."""
+        from services.ai_editor_llm import ai_edit_draft
+        content = self._sample_draft_content()
+        content.risk_note = "Existing critical warning"
+
+        # Case A: User asks to remove risk
+        fake_llm_json_remove = {
+            "title": content.title,
+            "description": content.description,
+            "tasks": content.tasks,
+            "potential_reward": content.potential_reward,
+            "risk_note": None,
+            "twitter_text": content.twitter_text,
+            "theme_color": content.artwork.theme_color,
+            "modified_fields": ["risk_note"],
+            "explanation": "Удален блок с риском",
+        }
+        with patch("services.ai_editor_llm._call_llm_json", return_value=(fake_llm_json_remove, "test-model")):
+            c_no_risk, _ = await ai_edit_draft(content, "убери раздел Risk с поста для телеграмма")
+        self.assertIsNone(c_no_risk.risk_note)
+        self.assertNotIn("⚠️ Risk:", c_no_risk.render_telegram_post())
+
+        # Case B: User asks to change reward only -> risk_note MUST BE PRESERVED
+        fake_llm_json_reward = {
+            "title": content.title,
+            "description": content.description,
+            "tasks": content.tasks,
+            "potential_reward": "$9999",
+            "risk_note": None,  # LLM omitted or set null, but modified_fields only says potential_reward
+            "twitter_text": content.twitter_text,
+            "theme_color": content.artwork.theme_color,
+            "modified_fields": ["potential_reward"],
+            "explanation": "Изменена награда",
+        }
+        with patch("services.ai_editor_llm._call_llm_json", return_value=(fake_llm_json_reward, "test-model")):
+            c_reward_only, _ = await ai_edit_draft(content, "измени награду на $9999")
+        self.assertEqual(c_reward_only.potential_reward, "$9999")
+        # Protected: risk_note must NOT be wiped when user only asked to edit reward!
+        self.assertEqual(c_reward_only.risk_note, "Existing critical warning")
+
 
 if __name__ == "__main__":
     unittest.main()

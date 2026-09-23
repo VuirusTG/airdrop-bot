@@ -61,6 +61,7 @@ YOU MUST PRESERVE all existing values from CURRENT DRAFT STATE unless the user e
 - If user asks to edit text / description: KEEP the exact existing `potential_reward`, `twitter_text`, `theme_color`, `tasks`, and `network` intact.
 - If user asks to edit reward: ONLY modify `potential_reward`. Do NOT rewrite description or tasks.
 - If user asks to edit Twitter: ONLY modify `twitter_text`.
+- If user asks to remove or edit risk: ONLY modify `risk_note` (set to null if removing, e.g. "убери раздел Risk").
 - If user asks to edit color or image: ONLY modify `theme_color` or `art_prompt` or `image_operation`. Do NOT rewrite text or steps.
 - In your JSON response, return `modified_fields`: ["<field_name>", ...] containing ONLY the fields that you actually modified.
 
@@ -106,6 +107,13 @@ EXAMPLES OF USER INTENT:
    - `modified_fields`: ["image_operation", "art_prompt"]
    - `explanation`: "Запрошена генерация нового фона карточки"
 
+7. "убери раздел Risk с поста для телеграмма" or "удали риск":
+   - Set `risk_note` to null.
+   - Keep all other fields untouched!
+   - `modified_fields`: ["risk_note"]
+   - Set `image_operation` to "none".
+   - `explanation`: "Удален раздел предупреждения о риске (Risk)"
+
 RULES:
 - Maintain factual integrity: do not invent false URLs or seed phrase requests.
 - Tasks: max 5 steps, <= 120 chars each, no ellipsis ("..."), clear actionable verbs in English.
@@ -121,6 +129,7 @@ Respond ONLY with valid JSON:
   "tasks": ["<step 1>", "<step 2>", ...],
   "potential_reward": "<updated or current reward>",
   "network": "<updated or current network>",
+  "risk_note": "<updated risk note or null>",
   "twitter_text": "<updated or current twitter text>",
   "theme_color": "<lime|cyan|violet|gold|red|orange>",
   "image_operation": "rerender_text" | "local_edit" | "new_artwork" | "none",
@@ -204,6 +213,7 @@ async def ai_edit_draft(
         f"Tasks:\n{current_tasks_str or 'None'}\n"
         f"Potential Reward: {current.potential_reward or 'None'}\n"
         f"Network: {current.network or 'None'}\n"
+        f"Risk Note: {current.risk_note or 'None'}\n"
         f"Twitter Draft: {current.twitter_text or 'None'}\n"
         f"Social Card Theme Color: {current.artwork.theme_color}\n"
         f"Project Link: {current.project_link or 'None'}\n"
@@ -258,6 +268,16 @@ async def ai_edit_draft(
             tw = str(data["twitter_text"]).strip()
             if len(tw) <= 300:
                 updated.twitter_text = tw
+
+        # Risk note
+        if (is_all or "risk_note" in mod_fields or "risk" in mod_fields) and "risk_note" in data:
+            rn = data.get("risk_note")
+            if rn is None or (isinstance(rn, str) and not rn.strip()) or str(rn).lower().strip() in ("none", "null", "false"):
+                updated.risk_note = None
+            else:
+                updated.risk_note = str(rn).strip()
+        elif any(w in instruction.lower() for w in ["убери риск", "удали риск", "remove risk", "delete risk", "без риска", "раздел risk", "раздел риск"]):
+            updated.risk_note = None
 
         # Theme color: only update if user instruction explicitly requests color change or model marked it
         from services.image_rework import detect_theme_color

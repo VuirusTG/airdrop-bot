@@ -103,6 +103,7 @@ RULES:
    - "category" (AIRDROP, TESTNET, QUEST, etc.)
    - "potential_reward" (reward amount or status)
    - "network" (chain name: Base, Arbitrum, Solana, etc.)
+   - "risk_note" (risk disclaimer, warning section; operation can be "remove" to delete it or "replace" to update it)
    - "project_link" (URL to project)
    - "tasks" (the whole list of tasks)
    - "task_1", "task_2", "task_3", "task_4", "task_5" (a specific task item)
@@ -124,7 +125,7 @@ RULES:
 4. Image operation routing:
    - If changing reward, tasks, title, network, category -> image_operation MUST BE "rerender_text" (NO new AI artwork).
    - If changing background, character, art style -> image_operation MUST BE "new_artwork".
-   - If changing only twitter text or private links -> image_operation MUST BE "none".
+   - If changing only twitter text, risk_note, or private links -> image_operation MUST BE "none".
 
 Respond ONLY with valid JSON:
 {
@@ -184,6 +185,49 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             affected_components=["draft_data", "twitter_post"],
             image_operation="none",
             explanation="Обновление текста для Twitter",
+        )
+
+    # 1c. Remove / clear risk note: "убери раздел Risk с поста для телеграмма", "удали риск", "убери блок с риском", "remove risk"
+    m_del_risk = re.search(
+        r"(?:удали|убери|сотри|очисти|delete|remove|clear)\s+(?:(?:из|с|в)\s+(?:поста|телеграм\w*|черновик\w*|tg)\s+)?(?:раздел\s+|блок\s+|строку\s+|предупреждение\s+(?:о\s+)?)?(?:risk|риск\w*|risk_note)(?:\s+(?:с|из|в)\s+(?:поста|телеграм\w*|черновик\w*|tg))?",
+        cmd,
+        re.IGNORECASE,
+    ) or re.search(
+        r"(?:без\s+риска|no\s+risk)",
+        cmd,
+        re.IGNORECASE,
+    )
+    if m_del_risk:
+        return EditPlan(
+            target="risk_note",
+            operation="remove",
+            old_value=current.risk_note,
+            new_value=None,
+            confidence=0.99,
+            requires_confirmation=False,
+            affected_components=["draft_data", "telegram_post"],
+            image_operation="none",
+            explanation="Удаление раздела с предупреждением о риске (Risk)",
+        )
+
+    # 1d. Change / set risk note: "Измени риск на: ...", "Поменяй риск: ...", "Update risk to: ..."
+    m_set_risk = re.search(
+        r"(?:измени|поменяй|смени|обнови|set|change|update)\s+(?:раздел\s+|блок\s+|строку\s+|предупреждение\s+(?:о\s+)?)?(?:risk|риск\w*|risk_note)(?:\s+(?:на|to))?\s*[:\s]*(.+)",
+        cmd,
+        re.IGNORECASE,
+    )
+    if m_set_risk and not re.search(r"пост\b|черновик|картинк|фон", cmd, re.IGNORECASE):
+        new_risk = re.sub(r"^(?:на\s*[:\s]*|[:\s]+)", "", m_set_risk.group(1)).strip()
+        return EditPlan(
+            target="risk_note",
+            operation="replace",
+            old_value=current.risk_note,
+            new_value=new_risk,
+            confidence=0.98,
+            requires_confirmation=False,
+            affected_components=["draft_data", "telegram_post"],
+            image_operation="none",
+            explanation=f"Обновление описания риска: {new_risk[:50]}",
         )
 
     # 2. Change network: "Смени сеть на Solana" / "Поменяй network на Base"
@@ -383,6 +427,8 @@ async def parse_intent_with_llm(command: str, current: DraftContent) -> EditPlan
         f"Tasks:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(current.tasks, 1)) + "\n"
         f"Potential Reward: {current.potential_reward}\n"
         f"Network: {current.network}\n"
+        f"Risk Note: {current.risk_note or 'None'}\n"
+        f"Twitter Draft: {current.twitter_text or 'None'}\n"
         f"Project Link: {current.project_link}\n"
         f"Artwork Theme Color: {current.artwork.theme_color}\n\n"
         f"USER COMMAND:\n{command}\n\n"
@@ -534,7 +580,8 @@ Return ONLY a valid JSON object:
     "<actionable task 3>"
   ],
   "potential_reward": "<reward or null>",
-  "network": "<network or null>"
+  "network": "<network or null>",
+  "risk_note": "<one sentence risk warning or null>"
 }"""
 
 
@@ -560,6 +607,7 @@ async def rewrite_draft_with_llm(current: DraftContent, instruction: str) -> Dra
         f"Tasks:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(current.tasks, 1)) + "\n"
         f"Potential Reward: {current.potential_reward}\n"
         f"Network: {current.network}\n"
+        f"Risk Note: {current.risk_note}\n"
         f"Twitter Draft: {current.twitter_text}\n"
         f"Theme Color: {current.artwork.theme_color}\n"
         f"Project Link: {current.project_link}\n\n"
@@ -610,6 +658,9 @@ async def rewrite_draft_with_llm(current: DraftContent, instruction: str) -> Dra
             updated.potential_reward = str(data["potential_reward"]).strip()
         if data.get("network"):
             updated.network = str(data["network"]).strip()
+        if "risk_note" in data:
+            rn = data.get("risk_note")
+            updated.risk_note = str(rn).strip() if rn else None
 
         raw_tasks = data.get("tasks")
         if isinstance(raw_tasks, list) and raw_tasks:
@@ -767,6 +818,13 @@ class EditorService:
         # 10. Twitter Draft
         elif target in ("twitter", "twitter_text", "tweet", "x"):
             new_content.twitter_text = str(new_val).strip() if new_val else None
+
+        # 11. Risk Note
+        elif target in ("risk", "risk_note", "risk_warning", "risks"):
+            if op in ("remove", "delete", "clear") or not new_val or str(new_val).lower().strip() in ("none", "null", "false"):
+                new_content.risk_note = None
+            else:
+                new_content.risk_note = str(new_val).strip()
 
         # Final check on tasks
         final_val = validate_tasks(new_content.tasks)
