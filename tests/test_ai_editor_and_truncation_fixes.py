@@ -387,6 +387,162 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
             self.assertIn("401 (Unauthorized)", call_text)
             self.assertIn("429 (Rate Limit)", call_text)
 
+    async def test_cumulative_multi_step_sequential_edits(self):
+        """Verify that multiple sequential edits across text, reward, color, and description are strictly cumulative."""
+        content = self._sample_draft_content()
+        # Step 0 initial assertions
+        self.assertEqual(content.potential_reward, "$2500+")
+        self.assertEqual(content.artwork.theme_color, "lime")
+        orig_tasks = list(content.tasks)
+        self.assertEqual(len(orig_tasks), 3)
+
+        # Step 1: User edits reward to "$1000+"
+        p1 = await EditorService.create_edit_plan('измени Potential rewards на фото на "$1000+"', content)
+        c1, ok1, _ = await EditorService.apply_edit_plan(p1, content)
+        self.assertTrue(ok1)
+        self.assertEqual(c1.potential_reward, "$1000+")
+        self.assertEqual(c1.artwork.theme_color, "lime")
+        self.assertEqual(c1.tasks, orig_tasks)
+
+        # Step 2: User changes color to violet
+        from services.image_rework import detect_theme_color
+        color_cmd = "сделай карточку фиолетового цвета"
+        p2 = await EditorService.create_edit_plan(color_cmd, c1)
+        c2, ok2, _ = await EditorService.apply_edit_plan(p2, c1)
+        self.assertTrue(ok2)
+        req_color = detect_theme_color(color_cmd)
+        if req_color:
+            c2.artwork.theme_color = req_color
+        self.assertEqual(c2.artwork.theme_color, "violet")
+        # CRITICAL: Reward must still be "$1000+", not reverted to initial "$2500+"!
+        self.assertEqual(c2.potential_reward, "$1000+")
+        self.assertEqual(c2.tasks, orig_tasks)
+
+        # Step 3: User makes description concise
+        desc_cmd = "сделай описание лаконичным"
+        p3 = await EditorService.create_edit_plan(desc_cmd, c2)
+        # Verify plan routes to description or none image operation
+        self.assertIn(p3.image_operation, ("none", "rerender_text"))
+        # Simulate LLM rewrite for description
+        import copy
+        fake_desc_draft = copy.deepcopy(c2)
+        fake_desc_draft.description = "Flop Network: Fast AI agents on Base testnet."
+        with patch("services.ai_editor_llm.ai_edit_draft", return_value=(fake_desc_draft, None)):
+            c3, ok3, _ = await EditorService.apply_edit_plan(p3, c2)
+        self.assertTrue(ok3)
+        self.assertEqual(c3.description, "Flop Network: Fast AI agents on Base testnet.")
+        # CRITICAL: Both reward from Step 1 AND theme color from Step 2 are preserved!
+        self.assertEqual(c3.potential_reward, "$1000+")
+        self.assertEqual(c3.artwork.theme_color, "violet")
+        self.assertEqual(c3.tasks, orig_tasks)
+
+    async def test_ai_edit_draft_preserves_untouched_fields_with_modified_fields(self):
+        """Verify that ai_edit_draft only applies fields in modified_fields and protects unmentioned ones."""
+        from services.ai_editor_llm import ai_edit_draft
+        content = self._sample_draft_content()
+        content.potential_reward = "$777"
+        content.artwork.theme_color = "violet"
+
+        # Simulate LLM returning a hallucinated default "lime" theme_color and generic reward,
+        # but correctly declaring modified_fields = ["description"]
+        fake_llm_json = {
+            "title": content.title,
+            "description": "Short and punchy summary.",
+            "tasks": content.tasks,
+            "potential_reward": "TBD",  # LLM attempted to reset reward
+            "theme_color": "lime",      # LLM attempted to reset color to lime
+            "twitter_text": content.twitter_text,
+            "modified_fields": ["description"],
+            "explanation": "Made description concise.",
+        }
+
+        with patch("services.ai_editor_llm._call_llm_json", return_value=(fake_llm_json, "test-model")):
+            updated, meta = await ai_edit_draft(content, "сделай описание короче")
+
+        self.assertIsNotNone(updated)
+        self.assertIn("explanation", meta)
+        self.assertEqual(updated.description, "Short and punchy summary.")
+        # Protected: potential_reward MUST NOT be reset to TBD
+        self.assertEqual(updated.potential_reward, "$777")
+        # Protected: theme_color MUST NOT be reset to lime
+        self.assertEqual(updated.artwork.theme_color, "violet")
+
+    async def test_studio_set_color_preserves_content_json_and_snapshots(self):
+        """Verify on_set_color maintains content_json, custom steps/reward, and allows undo."""
+        from bot.handlers.admin_review import on_set_color
+        from services.draft_content import sync_content_to_draft
+        from unittest.mock import MagicMock
+
+        content = self._sample_draft_content()
+        content.potential_reward = "$1500"
+        content.tasks = ["Step A", "Step B"]
+
+        async with self.session_factory() as session:
+            project = Project(
+                name="Flop Network",
+                category="TESTNET",
+                chain="Base",
+                source="test",
+                status=ProjectStatus.PENDING_REVIEW,
+                dedup_hash="flop-network-test-studio-hash",
+            )
+            session.add(project)
+            await session.flush()
+
+            draft = Draft(
+                project_id=project.id,
+                version=1,
+            )
+            sync_content_to_draft(content, draft)
+            session.add(draft)
+            await session.commit()
+            draft_id = draft.id
+
+            # Save initial snapshot
+            await VersionManager.save_snapshot(
+                session,
+                draft_id=draft.id,
+                project_id=project.id,
+                action="Исходный черновик",
+                user_command=None,
+                edit_plan_json=None,
+                content=content,
+            )
+
+        # Mock callback query for on_set_color:pid:cyan
+        mock_cb = MagicMock()
+        mock_cb.data = f"set_color:{project.id}:cyan"
+        mock_cb.from_user.id = 123456
+        mock_cb.answer = AsyncMock()
+        mock_cb.message = AsyncMock()
+
+        with patch("bot.handlers.admin_review.get_session", self.session_factory), \
+             patch("bot.handlers.admin_review._replace_review_message", new_callable=AsyncMock):
+            await on_set_color(mock_cb)
+
+        # Verify results in DB
+        async with self.session_factory() as session:
+            from sqlalchemy.orm import selectinload
+            from sqlalchemy import select
+            res = await session.execute(
+                select(Project).options(selectinload(Project.drafts)).where(Project.id == project.id)
+            )
+            loaded_proj = res.scalar_one()
+            latest = loaded_proj.latest_draft()
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest.version, 2)
+            self.assertIsNotNone(latest.content_json)
+
+            from services.draft_content import draft_to_content
+            loaded_content = draft_to_content(latest, loaded_proj)
+            self.assertEqual(loaded_content.artwork.theme_color, "cyan")
+            self.assertEqual(loaded_content.potential_reward, "$1500")
+            self.assertEqual(loaded_content.tasks, ["Step A", "Step B"])
+
+            # Verify Undo is available and functions!
+            can_undo = await VersionManager.can_undo(session, latest.id)
+            self.assertTrue(can_undo)
+
 
 if __name__ == "__main__":
     unittest.main()

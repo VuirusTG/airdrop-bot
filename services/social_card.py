@@ -977,12 +977,16 @@ async def render_social_card_from_content(content: Any) -> SocialCard | None:
 
     art_meta = content.artwork
     custom_art = art_meta.custom_artwork_path
-    if not custom_art and art_meta.path:
-        p = Path(art_meta.path)
-        if p.is_file() and "generated" not in p.parts:
-            custom_art = str(p)
     if custom_art and not Path(custom_art).is_file():
         custom_art = None
+
+    if not custom_art and art_meta.path:
+        p = Path(art_meta.path)
+        if p.is_file():
+            # Allow artworks directory and user_uploads, but avoid using composited final card as base
+            if "artworks" in p.parts or "user_uploads" in p.parts or "generated" not in p.parts:
+                custom_art = str(p)
+                art_meta.custom_artwork_path = custom_art
 
     return await generate_social_card(
         name=content.title,

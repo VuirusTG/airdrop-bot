@@ -50,7 +50,7 @@ class Project(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
-    drafts: Mapped[list["Draft"]] = relationship(back_populates="project", order_by="Draft.version")
+    drafts: Mapped[list["Draft"]] = relationship(back_populates="project", order_by=lambda: (Draft.version, Draft.id))
     published_posts: Mapped[list["PublishedPost"]] = relationship(back_populates="project")
 
     def latest_draft(self) -> "Draft | None":

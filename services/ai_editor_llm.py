@@ -55,39 +55,55 @@ Respond ONLY with valid JSON:
 SYSTEM_PROMPT_CONVERSATIONAL_EDITOR = """You are an intelligent Conversational Crypto Draft Editor.
 Your job is to interpret the user's natural language instruction and update the current draft accordingly.
 
-You are NOT a rigid template parser. You understand nuance, intent, and context:
+CRITICAL PRINCIPLE — INCREMENTAL / CUMULATIVE EDITING:
+The user is editing this draft across multiple sequential turns.
+YOU MUST PRESERVE all existing values from CURRENT DRAFT STATE unless the user explicitly requested to modify that specific field:
+- If user asks to edit text / description: KEEP the exact existing `potential_reward`, `twitter_text`, `theme_color`, `tasks`, and `network` intact.
+- If user asks to edit reward: ONLY modify `potential_reward`. Do NOT rewrite description or tasks.
+- If user asks to edit Twitter: ONLY modify `twitter_text`.
+- If user asks to edit color or image: ONLY modify `theme_color` or `art_prompt` or `image_operation`. Do NOT rewrite text or steps.
+- In your JSON response, return `modified_fields`: ["<field_name>", ...] containing ONLY the fields that you actually modified.
 
 EXAMPLES OF USER INTENT:
 1. "измени Potential rewards на фото на $1000+" or "поменяй награду на $500":
    - Update `potential_reward` to "$1000+".
-   - Keep tasks and description intact.
-   - Set `image_operation` to "rerender_text" (this rerenders the HUD text on the social card without generating new art).
+   - Keep tasks, description, theme_color, and twitter intact.
+   - `modified_fields`: ["potential_reward"]
+   - Set `image_operation` to "rerender_text".
    - `explanation`: "Изменена награда на $1000+ на карточке и в посте"
 
 2. "сделай текст поста лаконичным и завлекающим" or "сделай короче и понятнее":
    - Rewrite `description` to be punchy, engaging, and concise (2-3 sentences).
    - Refine `tasks` to be sharp and actionable.
+   - Keep existing `potential_reward`, `theme_color`, and `twitter_text` intact!
+   - `modified_fields`: ["description", "tasks"]
    - Set `image_operation` to "rerender_text".
    - `explanation`: "Текст поста переписан лаконично и завлекающе"
 
 3. "перепиши твит" or "сделай твит бодрее":
    - Rewrite `twitter_text` (strictly <= 280 chars, strong hook, includes project link).
+   - Keep all other fields untouched.
+   - `modified_fields`: ["twitter_text"]
    - Set `image_operation` to "none".
    - `explanation`: "Обновлен текст для Twitter"
 
 4. "удали 2 пункт и добавь: Сделай депозит от 20 USDC":
    - Modify the `tasks` array accordingly.
+   - `modified_fields`: ["tasks"]
    - Set `image_operation` to "rerender_text".
    - `explanation`: "Обновлены шаги действий"
 
 5. "смени тему на синюю" or "сделай фиолетовый фон":
    - Set `theme_color` to "cyan" / "violet" / "lime" / "gold" / "red" / "orange".
+   - Keep description, tasks, reward, twitter intact!
+   - `modified_fields`: ["theme_color"]
    - Set `image_operation` to "local_edit".
    - `explanation`: "Сменен цвет темы карточки"
 
 6. "сделай фон в стиле киберпанк" or "поменяй картинку/арт":
    - Set `image_operation` to "new_artwork".
    - Set `art_prompt` to English prompt for background art.
+   - `modified_fields`: ["image_operation", "art_prompt"]
    - `explanation`: "Запрошена генерация нового фона карточки"
 
 RULES:
@@ -98,6 +114,7 @@ RULES:
 
 Respond ONLY with valid JSON:
 {
+  "modified_fields": ["<field1>", "<field2>"],
   "title": "<current or updated title>",
   "category": "<current or updated category>",
   "description": "<current or updated description>",
@@ -206,41 +223,70 @@ async def ai_edit_draft(
     }
 
     if isinstance(data, dict):
-        if data.get("title"):
+        raw_mod = data.get("modified_fields") or []
+        mod_fields = set(str(f).lower().strip() for f in raw_mod)
+        is_all = not mod_fields or "all" in mod_fields
+
+        # Title
+        if (is_all or "title" in mod_fields or "project_title" in mod_fields) and data.get("title"):
             updated.title = str(data["title"]).strip()
-        if data.get("category"):
+
+        # Category
+        if (is_all or "category" in mod_fields) and data.get("category"):
             updated.category = str(data["category"]).strip().upper()
-        if data.get("description"):
+
+        # Description
+        if (is_all or "description" in mod_fields or "summary" in mod_fields) and data.get("description"):
             desc = str(data["description"]).strip()
             desc = re.sub(r"This draft was created without AI[^\.]*\.?", "", desc, flags=re.IGNORECASE).strip()
             updated.description = desc
-        if "potential_reward" in data:
+
+        # Potential reward
+        if (is_all or "potential_reward" in mod_fields or "reward" in mod_fields) and "potential_reward" in data:
             rew = data.get("potential_reward")
-            updated.potential_reward = str(rew).strip() if rew else None
-        if "network" in data:
+            if rew:
+                updated.potential_reward = str(rew).strip()
+
+        # Network
+        if (is_all or "network" in mod_fields or "chain" in mod_fields) and data.get("network"):
             net = data.get("network")
-            updated.network = str(net).strip() if net else None
-        if "twitter_text" in data and data.get("twitter_text"):
+            if net:
+                updated.network = str(net).strip()
+
+        # Twitter text
+        if (is_all or "twitter_text" in mod_fields or "twitter" in mod_fields or "tweet" in mod_fields) and data.get("twitter_text"):
             tw = str(data["twitter_text"]).strip()
             if len(tw) <= 300:
                 updated.twitter_text = tw
-        if data.get("theme_color"):
+
+        # Theme color: only update if user instruction explicitly requests color change or model marked it
+        from services.image_rework import detect_theme_color
+        cmd_color = detect_theme_color(instruction)
+        if cmd_color:
+            updated.artwork.theme_color = cmd_color
+        elif ("theme_color" in mod_fields or "color" in mod_fields or "artwork" in mod_fields) and data.get("theme_color"):
             color = str(data["theme_color"]).lower().strip()
             if color in {"lime", "cyan", "violet", "gold", "red", "orange"}:
                 updated.artwork.theme_color = color
 
-        # Sanitize and validate tasks
-        raw_tasks = data.get("tasks")
-        if isinstance(raw_tasks, list) and raw_tasks:
-            sanitized = [sanitize_task(str(t)) for t in raw_tasks if str(t).strip()]
-            val_res = validate_tasks(sanitized)
-            if val_res.is_valid:
-                updated.tasks = sanitized[:5]
-            else:
-                # If slight task validation failure, keep sanitized tasks up to 5 without ellipsis
-                cleaned_tasks = [t.rstrip(".,;…").strip() for t in sanitized if len(t) <= 120]
-                if cleaned_tasks:
-                    updated.tasks = cleaned_tasks[:5]
+        # Tasks
+        if is_all or "tasks" in mod_fields or "instructions" in mod_fields:
+            raw_tasks = data.get("tasks")
+            if isinstance(raw_tasks, list) and raw_tasks:
+                sanitized = [sanitize_task(str(t)) for t in raw_tasks if str(t).strip()]
+                val_res = validate_tasks(sanitized)
+                if val_res.is_valid:
+                    updated.tasks = sanitized[:5]
+                else:
+                    cleaned_tasks = [t.rstrip(".,;…").strip() for t in sanitized if len(t) <= 120]
+                    if cleaned_tasks:
+                        updated.tasks = cleaned_tasks[:5]
+
+        # Always preserve custom artwork path & preset across conversational edits
+        if current.artwork.custom_artwork_path and not updated.artwork.custom_artwork_path:
+            updated.artwork.custom_artwork_path = current.artwork.custom_artwork_path
+        if current.artwork.preset and not updated.artwork.preset:
+            updated.artwork.preset = current.artwork.preset
 
         meta["image_operation"] = data.get("image_operation", "rerender_text")
         meta["explanation"] = data.get("explanation", f"Обновлен черновик ({provider})")

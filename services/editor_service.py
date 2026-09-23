@@ -293,6 +293,26 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             explanation=f"Изменение заголовка на '{new_title}'",
         )
 
+    # 6b. Change description: "Измени описание на: ..." / "Поменяй описание ..." / "Сделай описание лаконичным"
+    m_desc = re.search(
+        r"(?:измени|поменяй|перепиши|обнови|сократи|сделай)\s+(?:описание|summary|description)(?:\s+на)?\s*[:\s]*(.+)?",
+        cmd,
+        re.IGNORECASE,
+    )
+    if m_desc and not re.search(r"пост\b|черновик|картинк|фон", cmd, re.IGNORECASE):
+        val = (m_desc.group(1) or "").strip()
+        return EditPlan(
+            target="description",
+            operation="rewrite" if (not val or any(w in cmd.lower() for w in ["лаконичн", "короче", "понятн"])) else "replace",
+            old_value=current.description,
+            new_value=val or cmd,
+            confidence=0.97,
+            requires_confirmation=False,
+            affected_components=["draft_data", "telegram_post"],
+            image_operation="none",
+            explanation=f"Обновление описания: {val or cmd}"[:80],
+        )
+
     # 7. Image & artwork edits: "поменяй фон", "сделай фон синим", "измени картинку на киберпанк", "поменяй фото", etc.
     from services.image_rework import requests_text_rework
     if requests_image_rework(cmd) and not requests_text_rework(cmd):
@@ -540,6 +560,8 @@ async def rewrite_draft_with_llm(current: DraftContent, instruction: str) -> Dra
         f"Tasks:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(current.tasks, 1)) + "\n"
         f"Potential Reward: {current.potential_reward}\n"
         f"Network: {current.network}\n"
+        f"Twitter Draft: {current.twitter_text}\n"
+        f"Theme Color: {current.artwork.theme_color}\n"
         f"Project Link: {current.project_link}\n\n"
         f"USER INSTRUCTION / FEEDBACK:\n{instruction}\n\n"
         "Generate the complete rewritten draft JSON:"
@@ -719,7 +741,13 @@ class EditorService:
 
         # 7. Description
         elif target in ("description", "summary"):
-            new_content.description = str(new_val).strip()
+            val_str = str(new_val).strip()
+            if op == "rewrite" or any(w in val_str.lower() for w in ["лаконичн", "короче", "понятн"]):
+                from services.ai_editor_llm import ai_edit_draft
+                updated, _ = await ai_edit_draft(new_content, f"Rewrite description only, keeping all other fields unchanged: {val_str}")
+                new_content.description = updated.description
+            else:
+                new_content.description = val_str
 
         # 8. Project Link
         elif target in ("project_link", "link"):

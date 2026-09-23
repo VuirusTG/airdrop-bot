@@ -3,6 +3,7 @@ from dataclasses import asdict
 import html
 import json
 import logging
+from pathlib import Path
 import re
 import uuid
 
@@ -585,22 +586,14 @@ async def on_regenerate_image(callback: CallbackQuery):
             return
         previous_draft = project.latest_draft()
         new_version = previous_draft.version + 1
-        official_image = await discover_project_image(project.source_url)
-        variant_themes = ["", "синий", "фиолетовый", "красный", "золотой"]
+        content = draft_to_content(previous_draft, project)
+
+        variant_themes = ["cyan", "violet", "red", "gold", "orange", "lime"]
         theme = variant_themes[new_version % len(variant_themes)]
-        regeneration_prompt = theme or previous_draft.image_prompt or ""
-        loop_time = int(asyncio.get_event_loop().time())
-        social_card = await generate_social_card(
-            name=project.name,
-            category=project.category,
-            chain=project.chain,
-            instructions=previous_draft.instructions,
-            official_image_url=official_image.url if official_image else None,
-            image_prompt=regeneration_prompt,
-            project_url=project.project_url,
-            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
-            potential_reward=previous_draft.potential_reward,
-        )
+        content.artwork.theme_color = theme
+        content.artwork.prompt = f"color:{theme}"
+
+        social_card = await render_social_card_from_content(content)
         if not social_card:
             if callback.message:
                 await callback.message.answer(
@@ -609,23 +602,37 @@ async def on_regenerate_image(callback: CallbackQuery):
                 )
             return
 
+        content.artwork.path = social_card.path
+        content.artwork.source = social_card.source
+
         new_draft = Draft(
             project_id=project.id,
             version=new_version,
-            title=previous_draft.title,
-            summary=previous_draft.summary,
-            instructions=previous_draft.instructions,
-            potential_reward=previous_draft.potential_reward,
-            risk_note=previous_draft.risk_note,
-            twitter_text=previous_draft.twitter_text,
-            image_path=social_card.path,
-            image_source=social_card.source,
-            image_prompt=regeneration_prompt,
-            source_url=previous_draft.source_url or project.source_url,
-            project_url=previous_draft.project_url or project.project_url,
             rework_feedback="Regenerate image button",
         )
+        sync_content_to_draft(content, new_draft)
         project.drafts.append(new_draft)
+        await session.flush()
+
+        prev_content = draft_to_content(previous_draft, project)
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Предыдущая версия",
+            user_command=None,
+            edit_plan_json=None,
+            content=prev_content,
+        )
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action=f"Перегенерация карточки ({theme})",
+            user_command="Regenerate image button",
+            edit_plan_json=None,
+            content=content,
+        )
         await session.commit()
         if callback.message:
             try:
@@ -682,40 +689,46 @@ async def on_set_color(callback: CallbackQuery):
             return
         previous_draft = project.latest_draft()
         new_version = previous_draft.version + 1
-        loop_time = int(asyncio.get_event_loop().time())
-        social_card = await generate_social_card(
-            name=project.name,
-            category=project.category,
-            chain=project.chain,
-            instructions=previous_draft.instructions,
-            official_image_url=None,
-            image_prompt=previous_draft.image_prompt,
-            project_url=project.project_url,
-            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
-            potential_reward=previous_draft.potential_reward,
-            theme_color=color_name,
-        )
+        content = draft_to_content(previous_draft, project)
+        content.artwork.theme_color = color_name
+        content.artwork.prompt = f"color:{color_name}"
+
+        social_card = await render_social_card_from_content(content)
         if not social_card:
             await callback.answer("Ошибка смены цвета", show_alert=True)
             return
 
+        content.artwork.path = social_card.path
+        content.artwork.source = social_card.source
+
         new_draft = Draft(
             project_id=project.id,
             version=new_version,
-            title=previous_draft.title,
-            summary=previous_draft.summary,
-            instructions=previous_draft.instructions,
-            potential_reward=previous_draft.potential_reward,
-            risk_note=previous_draft.risk_note,
-            twitter_text=previous_draft.twitter_text,
-            image_path=social_card.path,
-            image_source=social_card.source,
-            image_prompt=f"color:{color_name}",
-            source_url=project.source_url,
-            project_url=project.project_url,
             rework_feedback=f"Set color {color_name}",
         )
+        sync_content_to_draft(content, new_draft)
         project.drafts.append(new_draft)
+        await session.flush()
+
+        prev_content = draft_to_content(previous_draft, project)
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Предыдущая версия",
+            user_command=None,
+            edit_plan_json=None,
+            content=prev_content,
+        )
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action=f"Цвет темы: {color_name}",
+            user_command=f"set_color:{color_name}",
+            edit_plan_json=None,
+            content=content,
+        )
         await session.commit()
 
     await _replace_review_message(callback, project_id, keyboard=studio_colors_keyboard(project_id))
@@ -752,41 +765,48 @@ async def on_set_style(callback: CallbackQuery):
             return
         previous_draft = project.latest_draft()
         new_version = previous_draft.version + 1
-        loop_time = int(asyncio.get_event_loop().time())
-        social_card = await generate_social_card(
-            name=project.name,
-            category=project.category,
-            chain=project.chain,
-            instructions=previous_draft.instructions,
-            official_image_url=None,
-            image_prompt=f"preset:{preset_name}",
-            project_url=project.project_url,
-            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
-            potential_reward=previous_draft.potential_reward,
-            custom_artwork_path=art_path,
-            theme_color=preset_theme,
-        )
+        content = draft_to_content(previous_draft, project)
+        content.artwork.preset = preset_name
+        content.artwork.custom_artwork_path = art_path
+        content.artwork.theme_color = preset_theme
+        content.artwork.prompt = f"preset:{preset_name}"
+
+        social_card = await render_social_card_from_content(content)
         if not social_card:
             await callback.answer("Не удалось применить стиль", show_alert=True)
             return
 
+        content.artwork.path = social_card.path
+        content.artwork.source = f"preset_{preset_name}_{provider}"
+
         new_draft = Draft(
             project_id=project.id,
             version=new_version,
-            title=previous_draft.title,
-            summary=previous_draft.summary,
-            instructions=previous_draft.instructions,
-            potential_reward=previous_draft.potential_reward,
-            risk_note=previous_draft.risk_note,
-            twitter_text=previous_draft.twitter_text,
-            image_path=social_card.path,
-            image_source=f"preset_{preset_name}_{provider}",
-            image_prompt=f"preset:{preset_name}",
-            source_url=project.source_url,
-            project_url=project.project_url,
             rework_feedback=f"Preset {preset_name}",
         )
+        sync_content_to_draft(content, new_draft)
         project.drafts.append(new_draft)
+        await session.flush()
+
+        prev_content = draft_to_content(previous_draft, project)
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Предыдущая версия",
+            user_command=None,
+            edit_plan_json=None,
+            content=prev_content,
+        )
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action=f"Стиль: {preset_name}",
+            user_command=f"set_style:{preset_name}",
+            edit_plan_json=None,
+            content=content,
+        )
         await session.commit()
 
     await _replace_review_message(callback, project_id, keyboard=studio_styles_keyboard(project_id))
@@ -810,40 +830,46 @@ async def on_studio_regen_ai(callback: CallbackQuery):
         art_path, provider = await generate_artwork(prompt=art_prompt, seed=seed)
 
         new_version = previous_draft.version + 1
-        loop_time = int(asyncio.get_event_loop().time())
-        social_card = await generate_social_card(
-            name=project.name,
-            category=project.category,
-            chain=project.chain,
-            instructions=previous_draft.instructions,
-            official_image_url=None,
-            image_prompt=art_prompt,
-            project_url=project.project_url,
-            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
-            potential_reward=previous_draft.potential_reward,
-            custom_artwork_path=art_path,
-        )
+        content = draft_to_content(previous_draft, project)
+        content.artwork.custom_artwork_path = art_path
+        content.artwork.prompt = art_prompt
+
+        social_card = await render_social_card_from_content(content)
         if not social_card:
             await callback.answer("Ошибка генерации ИИ", show_alert=True)
             return
 
+        content.artwork.path = social_card.path
+        content.artwork.source = f"ai_{provider}"
+
         new_draft = Draft(
             project_id=project.id,
             version=new_version,
-            title=previous_draft.title,
-            summary=previous_draft.summary,
-            instructions=previous_draft.instructions,
-            potential_reward=previous_draft.potential_reward,
-            risk_note=previous_draft.risk_note,
-            twitter_text=previous_draft.twitter_text,
-            image_path=social_card.path,
-            image_source=f"ai_{provider}",
-            image_prompt=art_prompt,
-            source_url=project.source_url,
-            project_url=project.project_url,
             rework_feedback="AI Art Regeneration",
         )
+        sync_content_to_draft(content, new_draft)
         project.drafts.append(new_draft)
+        await session.flush()
+
+        prev_content = draft_to_content(previous_draft, project)
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Предыдущая версия",
+            user_command=None,
+            edit_plan_json=None,
+            content=prev_content,
+        )
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Генерация нового ИИ фона",
+            user_command="studio_regen_ai",
+            edit_plan_json=None,
+            content=content,
+        )
         await session.commit()
 
     await _replace_review_message(callback, project_id, keyboard=photo_studio_keyboard(project_id))
@@ -900,40 +926,46 @@ async def on_apply_upload_bg(callback: CallbackQuery):
             return
         previous_draft = project.latest_draft()
         new_version = previous_draft.version + 1
-        loop_time = int(asyncio.get_event_loop().time())
-        social_card = await generate_social_card(
-            name=project.name,
-            category=project.category,
-            chain=project.chain,
-            instructions=previous_draft.instructions,
-            official_image_url=None,
-            image_prompt="user_custom_background",
-            project_url=project.project_url,
-            generation_key=f"project-{project.id}-v{new_version}-{loop_time}",
-            potential_reward=previous_draft.potential_reward,
-            custom_artwork_path=img_path,
-        )
+        content = draft_to_content(previous_draft, project)
+        content.artwork.custom_artwork_path = img_path
+        content.artwork.prompt = "user_custom_background"
+
+        social_card = await render_social_card_from_content(content)
         if not social_card:
             await callback.answer("Ошибка генерации карточки из фото", show_alert=True)
             return
 
+        content.artwork.path = social_card.path
+        content.artwork.source = "user_upload_card"
+
         new_draft = Draft(
             project_id=project.id,
             version=new_version,
-            title=previous_draft.title,
-            summary=previous_draft.summary,
-            instructions=previous_draft.instructions,
-            potential_reward=previous_draft.potential_reward,
-            risk_note=previous_draft.risk_note,
-            twitter_text=previous_draft.twitter_text,
-            image_path=social_card.path,
-            image_source="user_upload_card",
-            image_prompt="user_custom_background",
-            source_url=project.source_url,
-            project_url=project.project_url,
             rework_feedback="User uploaded custom card background",
         )
+        sync_content_to_draft(content, new_draft)
         project.drafts.append(new_draft)
+        await session.flush()
+
+        prev_content = draft_to_content(previous_draft, project)
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Предыдущая версия",
+            user_command=None,
+            edit_plan_json=None,
+            content=prev_content,
+        )
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Пользовательский фон карточки",
+            user_command="apply_upload_bg",
+            edit_plan_json=None,
+            content=content,
+        )
         await session.commit()
 
     if callback.message:
@@ -962,24 +994,40 @@ async def on_apply_upload_full(callback: CallbackQuery):
             return
         previous_draft = project.latest_draft()
         new_version = previous_draft.version + 1
+        content = draft_to_content(previous_draft, project)
+        content.artwork.path = img_path
+        content.artwork.custom_artwork_path = img_path
+        content.artwork.source = "user_upload_direct"
+        content.artwork.prompt = "user_upload_direct"
 
         new_draft = Draft(
             project_id=project.id,
             version=new_version,
-            title=previous_draft.title,
-            summary=previous_draft.summary,
-            instructions=previous_draft.instructions,
-            potential_reward=previous_draft.potential_reward,
-            risk_note=previous_draft.risk_note,
-            twitter_text=previous_draft.twitter_text,
-            image_path=img_path,
-            image_source="user_upload_direct",
-            image_prompt="user_upload_direct",
-            source_url=project.source_url,
-            project_url=project.project_url,
             rework_feedback="User uploaded direct image replacement",
         )
+        sync_content_to_draft(content, new_draft)
         project.drafts.append(new_draft)
+        await session.flush()
+
+        prev_content = draft_to_content(previous_draft, project)
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Предыдущая версия",
+            user_command=None,
+            edit_plan_json=None,
+            content=prev_content,
+        )
+        await VersionManager.save_snapshot(
+            session,
+            draft_id=new_draft.id,
+            project_id=project.id,
+            action="Замена карточки на фото",
+            user_command="apply_upload_full",
+            edit_plan_json=None,
+            content=content,
+        )
         await session.commit()
 
     if callback.message:
@@ -1060,9 +1108,9 @@ async def _execute_and_apply_plan(
         return
 
     # Handle image operations according to level
-    color = detect_theme_color(user_command) or (updated_content.artwork.theme_color if updated_content.artwork else None)
-    if color:
-        updated_content.artwork.theme_color = color
+    requested_color = detect_theme_color(user_command)
+    if requested_color:
+        updated_content.artwork.theme_color = requested_color
 
     if plan.image_operation in ("generate_artwork", "new_artwork"):
         preset = detect_preset(user_command)
@@ -1084,7 +1132,7 @@ async def _execute_and_apply_plan(
         if card:
             updated_content.artwork.path = card.path
             updated_content.artwork.source = card.source
-    elif plan.image_operation in ("rerender_text", "local_edit", "restyle") or color:
+    elif plan.image_operation in ("rerender_text", "local_edit", "restyle") or requested_color:
         card = await render_social_card_from_content(updated_content)
         if card:
             updated_content.artwork.path = card.path
