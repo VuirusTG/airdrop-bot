@@ -276,7 +276,7 @@ async def ai_edit_draft(
                 updated.risk_note = None
             else:
                 updated.risk_note = str(rn).strip()
-        elif any(w in instruction.lower() for w in ["убери риск", "удали риск", "remove risk", "delete risk", "без риска", "раздел risk", "раздел риск"]):
+        elif re.search(r"(?:удали|убери|сотри|очисти|вырежи|исключи|скипни|delete|remove|clear|drop|omit|skip|hide|скрой)\b[^\n]*?\b(?:risk\w*|риск\w*)\b|\b(?:без|no|without)\s+(?:risk\w*|риск\w*)\b", instruction, re.IGNORECASE):
             updated.risk_note = None
 
         # Theme color: only update if user instruction explicitly requests color change or model marked it

@@ -89,6 +89,15 @@ async def generate_chat_completion(
                     await asyncio.sleep(wait_sec)
                     continue
 
+                if resp.status_code == 400 and "response_format" in payload:
+                    logger.warning(
+                        "OpenRouter returned 400 with response_format for %s: %s; retrying without response_format constraint",
+                        payload["model"],
+                        resp.text[:200],
+                    )
+                    payload.pop("response_format", None)
+                    continue
+
                 resp.raise_for_status()
                 data = resp.json()
                 choices = data.get("choices") or []

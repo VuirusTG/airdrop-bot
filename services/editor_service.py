@@ -187,17 +187,14 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             explanation="Обновление текста для Twitter",
         )
 
-    # 1c. Remove / clear risk note: "убери раздел Risk с поста для телеграмма", "удали риск", "убери блок с риском", "remove risk"
-    m_del_risk = re.search(
-        r"(?:удали|убери|сотри|очисти|delete|remove|clear)\s+(?:(?:из|с|в)\s+(?:поста|телеграм\w*|черновик\w*|tg)\s+)?(?:раздел\s+|блок\s+|строку\s+|предупреждение\s+(?:о\s+)?)?(?:risk|риск\w*|risk_note)(?:\s+(?:с|из|в)\s+(?:поста|телеграм\w*|черновик\w*|tg))?",
-        cmd,
-        re.IGNORECASE,
-    ) or re.search(
-        r"(?:без\s+риска|no\s+risk)",
-        cmd,
-        re.IGNORECASE,
+    # 1c. Remove / clear risk note: covers all grammatical variations
+    del_verbs = r"(?:удали|убери|сотри|очисти|вырежи|исключи|скипни|delete|remove|clear|drop|omit|skip|hide|скрой)"
+    risk_words = r"(?:risk\w*|риск\w*)"
+    is_del_risk = (
+        re.search(rf"{del_verbs}\b[^\n]*?\b{risk_words}\b", cmd, re.IGNORECASE)
+        or re.search(rf"\b(?:без|no|without)\s+{risk_words}\b", cmd, re.IGNORECASE)
     )
-    if m_del_risk:
+    if is_del_risk and not re.search(rf"{del_verbs}\s+(?:картинк|фото|изображен|шаг|step|наград|reward|заголовок|title)", cmd, re.IGNORECASE):
         return EditPlan(
             target="risk_note",
             operation="remove",
@@ -212,23 +209,24 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
 
     # 1d. Change / set risk note: "Измени риск на: ...", "Поменяй риск: ...", "Update risk to: ..."
     m_set_risk = re.search(
-        r"(?:измени|поменяй|смени|обнови|set|change|update)\s+(?:раздел\s+|блок\s+|строку\s+|предупреждение\s+(?:о\s+)?)?(?:risk|риск\w*|risk_note)(?:\s+(?:на|to))?\s*[:\s]*(.+)",
+        r"(?:измени|поменяй|смени|обнови|set|change|update)\s+(?:[^\n]*?\b)?(?:risk\w*|риск\w*)(?:\s+(?:на|to))?\s*[:\s]*(.+)",
         cmd,
         re.IGNORECASE,
     )
-    if m_set_risk and not re.search(r"пост\b|черновик|картинк|фон", cmd, re.IGNORECASE):
+    if m_set_risk and not re.search(r"пост\b|черновик|картинк|фон|цвет|шаг|наград", cmd, re.IGNORECASE):
         new_risk = re.sub(r"^(?:на\s*[:\s]*|[:\s]+)", "", m_set_risk.group(1)).strip()
-        return EditPlan(
-            target="risk_note",
-            operation="replace",
-            old_value=current.risk_note,
-            new_value=new_risk,
-            confidence=0.98,
-            requires_confirmation=False,
-            affected_components=["draft_data", "telegram_post"],
-            image_operation="none",
-            explanation=f"Обновление описания риска: {new_risk[:50]}",
-        )
+        if new_risk:
+            return EditPlan(
+                target="risk_note",
+                operation="replace",
+                old_value=current.risk_note,
+                new_value=new_risk,
+                confidence=0.98,
+                requires_confirmation=False,
+                affected_components=["draft_data", "telegram_post"],
+                image_operation="none",
+                explanation=f"Обновление описания риска: {new_risk[:50]}",
+            )
 
     # 2. Change network: "Смени сеть на Solana" / "Поменяй network на Base"
     m_net = re.search(

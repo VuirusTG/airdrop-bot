@@ -57,6 +57,7 @@ awaiting_upload: dict[int, int] = {}
 awaiting_steps: dict[int, int] = {}
 uploaded_tokens: dict[str, str] = {}
 pending_edits: dict[str, dict] = {}
+last_active_project: dict[int, int] = {}
 _manual_scan_task: asyncio.Task | None = None
 
 
@@ -283,6 +284,9 @@ async def _show_review_project(callback: CallbackQuery, project_id: int) -> bool
     """Replace the current review card with another pending project."""
     if not callback.message:
         return False
+    user_id = callback.from_user.id if callback.from_user else 0
+    if user_id:
+        last_active_project[user_id] = project_id
     async with get_session() as session:
         queue = await _review_queue(session)
         project = next((item for item in queue if item.id == project_id), None)
@@ -307,6 +311,9 @@ async def _open_review_queue(message: Message) -> None:
         if not draft:
             await message.answer("В очереди найден проект без черновика.")
             return
+        user_id = message.from_user.id if message.from_user else 0
+        if user_id:
+            last_active_project[user_id] = project.id
         if draft.image_path:
             try:
                 await ensure_draft_image(project, draft)
@@ -562,6 +569,9 @@ async def on_rework(callback: CallbackQuery):
     if not await _is_admin_callback(callback):
         return
     project_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id if callback.from_user else 0
+    if user_id:
+        last_active_project[user_id] = project_id
     awaiting_feedback[project_id] = True
     if callback.message:
         await callback.message.reply(
@@ -1058,10 +1068,16 @@ async def on_photo_message(message: Message):
                 project_id = int(m.group(1))
 
     if not project_id:
-        async with get_session() as session:
-            queue = await _review_queue(session)
-            if queue:
-                project_id = queue[0].id
+        if user_id and user_id in last_active_project:
+            project_id = last_active_project[user_id]
+        else:
+            async with get_session() as session:
+                queue = await _review_queue(session)
+                if queue:
+                    project_id = queue[0].id
+
+    if project_id and user_id:
+        last_active_project[user_id] = project_id
 
     if not project_id:
         await message.answer("Не удалось определить проект для этой фотографии. Нажмите «Загрузить своё фото» в карточке.")
@@ -1216,9 +1232,13 @@ async def _execute_and_apply_plan(
         except Exception:
             pass
 
+    user_id = target_msg.from_user.id if target_msg.from_user else 0
+    if user_id and project.id:
+        last_active_project[user_id] = project.id
+
     await target_msg.answer(
-        f"✅ <b>Изменения применены:</b> {html.escape(plan.explanation)}\n"
-        f"Сохранена версия v{draft.version}. При необходимости вы можете нажать «↩️ Отменить правку (Undo)».",
+        f"✅ <b>Изменения применены (проект #{project.id}):</b> {html.escape(plan.explanation)}\n"
+        f"Сохранена версия v{draft.version}. При необходимости вы можете нажать «↩️ Отменить правку (Undo)» или отправить следующую команду прямо в чат.",
         parse_mode="HTML",
     )
 
@@ -1246,15 +1266,21 @@ async def on_feedback_reply(message: Message):
             if match:
                 project_id = int(match.group(1))
 
-    # If message is not an explicit reply, resolve project from awaiting_feedback or active queue
+    # If message is not an explicit reply, resolve project from awaiting_feedback, last_active_project, or active queue
+    user_id = message.from_user.id if message.from_user else 0
     if not project_id:
         if awaiting_feedback:
             project_id = next(iter(awaiting_feedback.keys()))
+        elif user_id and user_id in last_active_project:
+            project_id = last_active_project[user_id]
         else:
             async with get_session() as session:
                 queue = await _review_queue(session)
                 if queue:
                     project_id = queue[0].id
+
+    if project_id and user_id:
+        last_active_project[user_id] = project_id
 
     if not project_id:
         await message.answer("ℹ️ Нет активного черновика для редактирования. Вызовите /review для просмотра очереди.")

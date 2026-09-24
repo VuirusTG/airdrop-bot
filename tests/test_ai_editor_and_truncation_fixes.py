@@ -584,6 +584,21 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
             "remove risk",
             "удали раздел risk",
             "убери предупреждение о риске",
+            "удали блок с риском",
+            "удали блок риска",
+            "убери строку с риском",
+            "удали пункт risk",
+            "убери секцию risk",
+            "удали риски",
+            "без рисков",
+            "без риска",
+            "убери risk",
+            "сотри риск",
+            "очисти риск",
+            "исключи предупреждение о риске",
+            "remove risk section",
+            "delete risk warning",
+            "clear risk",
         ]
         for v in variations:
             p = _fast_deterministic_parse(v, content)
@@ -645,6 +660,61 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
         # Protected: risk_note must NOT be wiped when user only asked to edit reward!
         self.assertEqual(c_reward_only.risk_note, "Existing critical warning")
 
+    async def test_multi_turn_last_active_project_resolution(self):
+        """Verify that last_active_project correctly binds sequential edits without explicit reply."""
+        from bot.handlers.admin_review import last_active_project, on_feedback_reply
+        from unittest.mock import MagicMock, patch
+
+        user_id = 999
+        project_id = 42
+        last_active_project[user_id] = project_id
+
+        # Simulate user sending follow-up text command without reply_to_message
+        msg = MagicMock()
+        msg.from_user.id = user_id
+        msg.reply_to_message = None
+        msg.text = "удали блок с риском"
+        msg.answer = AsyncMock()
+
+        with patch("bot.handlers.admin_review._is_admin_message", return_value=True), \
+             patch("bot.handlers.admin_review.get_session", side_effect=lambda: self.session_factory()), \
+             patch("bot.handlers.admin_review._load_project", new_callable=AsyncMock) as mock_load, \
+             patch("bot.handlers.admin_review._execute_and_apply_plan", new_callable=AsyncMock) as mock_exec, \
+             patch("bot.handlers.admin_review.VersionManager.save_snapshot", new_callable=AsyncMock):
+
+            mock_proj = MagicMock()
+            mock_proj.id = project_id
+            mock_proj.project_url = "https://example.com"
+            mock_draft = MagicMock()
+            mock_draft.id = 101
+            mock_draft.content_json = None
+            mock_draft.risk_note = "Warning"
+            mock_draft.instructions = "1. Step"
+            mock_draft.potential_reward = "$100"
+            mock_draft.twitter_text = "tw"
+            mock_draft.image_path = None
+            mock_draft.image_source = None
+            mock_draft.image_prompt = None
+            mock_draft.title = "Test Proj"
+            mock_draft.summary = "Desc"
+            mock_proj.latest_draft.return_value = mock_draft
+
+            mock_load.return_value = mock_proj
+
+            await on_feedback_reply(msg)
+
+            # Verified: loaded project was project_id 42, NOT queue[0]!
+            mock_load.assert_called_once()
+            args, _ = mock_load.call_args
+            self.assertEqual(args[1], project_id)
+
+            # Verified: plan was executed for project 42
+            mock_exec.assert_called_once()
+            plan = mock_exec.call_args[0][5]
+            self.assertEqual(plan.target, "risk_note")
+            self.assertEqual(plan.operation, "remove")
+
 
 if __name__ == "__main__":
     unittest.main()
+
