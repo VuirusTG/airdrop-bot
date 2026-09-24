@@ -73,7 +73,7 @@ def _parse_draft(response_text: str) -> DraftResult:
         summary=data["summary"],
         instructions=data["instructions"],
         potential_reward=data.get("potential_reward"),
-        risk_note=data.get("risk_note"),
+        risk_note=None,
         twitter_text=data.get("twitter_text", "").strip() or None,
         image_prompt=data.get("image_prompt"),
     )

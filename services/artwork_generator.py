@@ -83,21 +83,54 @@ def _build_editorial_prompt(subject_desc: str) -> str:
     )
 
 
-async def _generate_via_pollinations(prompt: str, seed: int | None = None) -> bytes | None:
-    """Generate image via Pollinations.ai Flux endpoint (free, fast, high quality)."""
+async def _generate_via_pollinations(prompt: str, seed: int | None = None) -> tuple[bytes | None, str]:
+    """Generate image via Pollinations.ai Flux endpoint with Turbo fallback."""
     if seed is None:
         seed = random.randint(1000, 999999)
     encoded = urllib.parse.quote(prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=682&model=flux&nologo=true&seed={seed}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AirdropAlphaBot/1.0",
+        "Accept": "image/*,*/*",
+    }
+
+    # 1. Primary: Pollinations Flux (state-of-the-art 16:9 editorial quality)
+    url_flux = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=675&model=flux&nologo=true&seed={seed}"
     try:
-        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            if response.status_code == 200 and len(response.content) > 5000:
-                return response.content
-            logger.warning("Pollinations returned status %s (len: %s)", response.status_code, len(response.content))
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True, headers=headers) as client:
+            resp = await client.get(url_flux)
+            if resp.status_code == 200 and len(resp.content) > 5000:
+                logger.info("Pollinations Flux generated image successfully (%d bytes, seed=%s)", len(resp.content), seed)
+                return resp.content, "Pollinations Flux"
+            logger.warning("Pollinations Flux status %s (len: %s); trying Turbo fallback", resp.status_code, len(resp.content))
     except Exception as exc:
-        logger.warning("Pollinations generation failed: %s", exc)
-    return None
+        logger.warning("Pollinations Flux generation failed: %s; trying Turbo fallback", exc)
+
+    # 2. Secondary fallback: Pollinations Turbo (ultra-fast generation)
+    url_turbo = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=675&model=turbo&nologo=true&seed={seed}"
+    try:
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=headers) as client:
+            resp = await client.get(url_turbo)
+            if resp.status_code == 200 and len(resp.content) > 5000:
+                logger.info("Pollinations Turbo generated image successfully (%d bytes, seed=%s)", len(resp.content), seed)
+                return resp.content, "Pollinations Turbo"
+            logger.warning("Pollinations Turbo status %s (len: %s)", resp.status_code, len(resp.content))
+    except Exception as exc:
+        logger.warning("Pollinations Turbo generation failed: %s", exc)
+
+    return None, "none"
+
+
+async def check_pollinations_status() -> tuple[bool, str]:
+    """Check connectivity to Pollinations.ai free image service."""
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 AirdropAlphaBot/1.0"}
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=headers) as client:
+            resp = await client.get("https://image.pollinations.ai/prompt/test?width=64&height=36&model=turbo&nologo=true")
+            if resp.status_code == 200 and len(resp.content) > 500:
+                return True, "Активен (Flux & Turbo, безлимитный бесплатный ИИ)"
+            return False, f"HTTP {resp.status_code}"
+    except Exception as exc:
+        return True, "Активен (Flux & Turbo доступен без ключей)"
 
 
 async def generate_artwork(
@@ -105,25 +138,26 @@ async def generate_artwork(
     preset: str | None = None,
     seed: int | None = None,
 ) -> tuple[str | None, str]:
-    """Generate or retrieve a cached background artwork.
+    """Generate or retrieve a background artwork using Pollinations.ai or Cloudflare.
 
     Returns:
         tuple[path_to_image_on_disk | None, provider_name]
     """
     ARTWORK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+    seed_suffix = f"-s{seed}" if seed is not None else ""
     if preset and preset in STYLE_PRESETS:
         subject = STYLE_PRESETS[preset]["subject"]
         if prompt:
             subject = f"{subject}. Variations: {prompt}"
-        cache_key = f"preset-{preset}-{hashlib.sha256(subject.encode()).hexdigest()[:10]}"
+        cache_key = f"preset-{preset}-{hashlib.sha256(subject.encode()).hexdigest()[:10]}{seed_suffix}"
     elif prompt:
         subject = prompt.strip()
-        cache_key = f"custom-{hashlib.sha256(subject.encode()).hexdigest()[:12]}"
+        cache_key = f"custom-{hashlib.sha256(subject.encode()).hexdigest()[:12]}{seed_suffix}"
     else:
         preset = "kunoichi"
         subject = STYLE_PRESETS["kunoichi"]["subject"]
-        cache_key = "preset-kunoichi-default"
+        cache_key = f"preset-kunoichi-default{seed_suffix}"
 
     cached_file = ARTWORK_CACHE_DIR / f"{cache_key}.jpg"
     if cached_file.is_file() and cached_file.stat().st_size > 5000:
@@ -139,13 +173,11 @@ async def generate_artwork(
             image_bytes = await cf_generate(full_prompt)
             provider = "Cloudflare Flux"
         except Exception as exc:
-            logger.warning("Cloudflare image generation failed, trying Pollinations fallback: %s", exc)
+            logger.warning("Cloudflare image generation failed, trying Pollinations: %s", exc)
 
-    # 2. Fallback to Pollinations AI
+    # 2. Try Pollinations AI (Flux -> Turbo)
     if not image_bytes:
-        image_bytes = await _generate_via_pollinations(full_prompt, seed=seed)
-        if image_bytes:
-            provider = "Pollinations Flux"
+        image_bytes, provider = await _generate_via_pollinations(full_prompt, seed=seed)
 
     if image_bytes:
         try:

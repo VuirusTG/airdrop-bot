@@ -94,7 +94,7 @@ class Draft(Base):
         parts = [f"🚀 {self.title}", "", self.summary, "", "📝 What to do:", self.instructions]
         if self.potential_reward:
             parts += ["", f"💰 Potential reward: {self.potential_reward}"]
-        if self.risk_note:
+        if self.risk_note and not any(bp in self.risk_note.lower() for bp in ["verify the domain", "never share a seed", "airdrop allocations", "not yet finalized"]):
             parts += ["", f"⚠️ Risk: {self.risk_note}"]
         if self.project_url:
             parts += ["", f"🔗 Start here: {self.project_url}"]

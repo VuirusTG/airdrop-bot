@@ -313,7 +313,7 @@ def _review_caption(project: Project, draft: Draft) -> str:
     ]
     if draft.potential_reward:
         lines += ["", f"💰 {draft.potential_reward.strip()}"]
-    if draft.risk_note:
+    if draft.risk_note and not any(bp in draft.risk_note.lower() for bp in ["verify the domain", "never share a seed", "airdrop allocations", "not yet finalized"]):
         lines += ["", f"⚠️ {draft.risk_note.strip()}"]
     if draft.project_url:
         lines += ["", f"🔗 {draft.project_url}"]

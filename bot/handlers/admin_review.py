@@ -1641,7 +1641,7 @@ async def on_system_status(message: Message):
             f"4. OpenRouter (Основной ИИ): {'✅' if health.openrouter.working else '❌'}\n   {health.openrouter.detail}",
             f"5. Groq (резерв ИИ #1): {'✅' if health.groq.working else '❌'} {health.groq.detail}",
             f"6. Gemini (резерв ИИ #2): {'✅' if health.gemini.working else '❌'} {health.gemini.detail}",
-            f"7. Cloudflare Images: {'✅' if health.cloudflare.working else '❌'} {health.cloudflare.detail}",
+            f"7. Генерация картинок: {'✅' if health.cloudflare.working else '❌'} {health.cloudflare.detail}",
             "",
             "8. Рекомендации:",
         ]

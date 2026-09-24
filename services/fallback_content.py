@@ -144,7 +144,7 @@ def fallback_generate_draft(
         summary=summary,
         instructions=instructions,
         potential_reward="No reward or token allocation is confirmed. Participation may not lead to an airdrop.",
-        risk_note="Verify the domain and official accounts; never share a seed phrase or private key.",
+        risk_note=None,
         twitter_text=_x_post(name, category, project_url),
         image_prompt=(
             f"A polished 16:9 editorial crypto visual for {name}{ecosystem}, representing a {category} campaign, "

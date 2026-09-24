@@ -238,6 +238,10 @@ def draft_to_content(draft: Any, project: Any = None) -> DraftContent:
         prompt=getattr(draft, "image_prompt", None),
     )
 
+    legacy_risk = getattr(draft, "risk_note", None)
+    if legacy_risk and any(bp in legacy_risk.lower() for bp in ["verify the domain", "never share a seed", "airdrop allocations", "not yet finalized"]):
+        legacy_risk = None
+
     return DraftContent(
         title=getattr(draft, "title", "") or (getattr(project, "name", "") if project else ""),
         category=cat_val or "AIRDROP",
@@ -247,7 +251,7 @@ def draft_to_content(draft: Any, project: Any = None) -> DraftContent:
         network=chain_val,
         project_link=proj_url,
         links=[proj_url] if proj_url else [],
-        risk_note=getattr(draft, "risk_note", None),
+        risk_note=legacy_risk,
         twitter_text=getattr(draft, "twitter_text", None),
         source_url=src_url,
         raw_instructions_fallback=getattr(draft, "instructions", None) if needs_review else None,

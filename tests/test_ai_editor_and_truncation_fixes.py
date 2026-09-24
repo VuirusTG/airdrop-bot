@@ -714,7 +714,88 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(plan.target, "risk_note")
             self.assertEqual(plan.operation, "remove")
 
+    async def test_default_risk_note_removal(self):
+        """Verify risk_note defaults to None and legacy boilerplate is filtered out."""
+        from services.fallback_content import fallback_generate_draft
+        from services.llm_draft import _parse_draft
+        from services.draft_content import draft_to_content
+        from db.models import Draft
+
+        # 1. Fallback content has None risk_note
+        fallback = fallback_generate_draft("TestProj", "raw context", "Ethereum", "airdrop", "https://t.me/test")
+        self.assertIsNone(fallback.risk_note)
+
+        # 2. LLM draft parser defaults to None
+        raw_json = (
+            '{"title": "Test", "summary": "Summ", "instructions": "1. Step", '
+            '"potential_reward": "None", "twitter_text": "tw", "image_prompt": "prompt", '
+            '"risk_note": "Airdrop allocations..."}'
+        )
+        parsed = _parse_draft(raw_json)
+        self.assertIsNone(parsed.risk_note)
+
+        # 3. draft_to_content filters boilerplate
+        draft = Draft(
+            project_id=1,
+            title="T",
+            summary="S",
+            instructions="Inst",
+            risk_note="Airdrop allocations, criteria, and claims are subject to project terms and changes."
+        )
+        content = draft_to_content(draft)
+        self.assertIsNone(content.risk_note)
+
+        # 4. rendered_text excludes boilerplate
+        rendered = draft.rendered_text()
+        self.assertNotIn("Risk", rendered)
+        self.assertNotIn("⚠️", rendered)
+
+    async def test_pollinations_artwork_generator(self):
+        """Verify Pollinations.ai generator, fallback cascade, and seed cache-key."""
+        from services.artwork_generator import (
+            check_pollinations_status,
+            _generate_via_pollinations,
+            generate_artwork
+        )
+        from unittest.mock import MagicMock
+
+        # 1. Status check with 200 and valid image size
+        mock_resp_200 = MagicMock()
+        mock_resp_200.status_code = 200
+        mock_resp_200.content = b"fake_png_data" * 100  # > 500 bytes
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_resp_200
+            ok, detail = await check_pollinations_status()
+            self.assertTrue(ok)
+            self.assertIn("Flux & Turbo", detail)
+
+        # 2. _generate_via_pollinations uses flux first
+        mock_resp_img = MagicMock()
+        mock_resp_img.status_code = 200
+        mock_resp_img.content = b"large_image_bytes" * 500  # > 5000 bytes
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_resp_img
+            img_bytes, provider = await _generate_via_pollinations("crypto logo", seed=123)
+            self.assertEqual(img_bytes, mock_resp_img.content)
+            self.assertEqual(provider, "Pollinations Flux")
+            first_url = mock_get.call_args_list[0][0][0]
+            self.assertIn("model=flux", first_url)
+            self.assertIn("seed=123", first_url)
+
+        # 3. generate_artwork includes seed in cache key
+        with patch("services.artwork_generator.cf_configured", return_value=False), \
+             patch("services.artwork_generator._generate_via_pollinations", new_callable=AsyncMock) as mock_gen, \
+             patch("pathlib.Path.is_file", return_value=False), \
+             patch("pathlib.Path.write_bytes") as mock_wb:
+            mock_gen.return_value = (b"large_image_bytes" * 500, "Pollinations Flux")
+            img_path, prov = await generate_artwork(prompt="cyberpunk airdrop", seed=42)
+            self.assertIsNotNone(img_path)
+            self.assertIn("-s42.jpg", img_path)
+            self.assertEqual(prov, "Pollinations Flux")
+            mock_wb.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

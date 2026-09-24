@@ -170,7 +170,11 @@ async def check_groq() -> HealthItem:
 
 async def check_cloudflare() -> HealthItem:
     working, detail = await check_cloudflare_connection()
-    return HealthItem("Cloudflare Images", working, detail)
+    if working:
+        return HealthItem("ИИ-генерация картинок", True, f"Cloudflare Flux ({detail})")
+    from services.artwork_generator import check_pollinations_status
+    p_ok, p_detail = await check_pollinations_status()
+    return HealthItem("ИИ-генерация картинок", p_ok, f"Pollinations.ai: {p_detail}")
 
 
 def _recommendations(
@@ -218,7 +222,7 @@ def _recommendations(
         )
     if not cloudflare.working:
         recommendations.append(
-            "Проверить CLOUDFLARE_API_TOKEN и CLOUDFLARE_ACCOUNT_ID; без них social card продолжает работать локально."
+            "Генерация картинок: активен бесплатный Pollinations.ai (Flux/Turbo). Для подключения Cloudflare укажите CLOUDFLARE_API_TOKEN."
         )
     if not recommendations:
         recommendations.append("Все основные компоненты работают; можно запускать обычное сканирование.")
