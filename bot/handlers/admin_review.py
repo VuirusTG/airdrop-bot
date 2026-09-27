@@ -11,6 +11,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputMediaPhoto, Message
 from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bot.keyboards import (
@@ -190,6 +191,57 @@ def _review_caption(project: Project, draft: Draft, position: int, total: int) -
     return tg_body[:1020].rsplit("\n", 1)[0]
 
 
+async def _ensure_upgraded_draft(session: AsyncSession, project: Project, draft: Draft) -> Draft:
+    """If draft has legacy fallback markers (without AI, robotic tasks, no-reward contradiction), upgrade it on the fly."""
+    is_legacy = (
+        draft.risk_note is not None
+        or (draft.summary and any(m in draft.summary.lower() for m in ("without ai", "the source reports:", "appears to have a new")))
+        or (draft.instructions and any(m in draft.instructions.lower() for m in ("open the official project page using the link below", "verify that the campaign is active")))
+        or (draft.potential_reward and "no reward or token allocation is confirmed" in draft.potential_reward.lower())
+    )
+    if not is_legacy:
+        return draft
+
+    # 1. Clean risk_note permanently
+    draft.risk_note = None
+
+    # 2. Try OpenRouter rewrite first if configured
+    if getattr(settings, "OPENROUTER_API_KEY", None):
+        try:
+            from services.ai_editor_llm import ai_generate_initial_draft
+            from services.draft_content import sync_content_to_draft
+            content, draft_res, prov = await ai_generate_initial_draft(
+                name=project.name,
+                raw_text=draft.summary or project.name,
+                chain=project.chain,
+                category=project.category or "airdrop",
+                source_url=draft.source_url or project.source_url,
+                project_url=draft.project_url or project.project_url,
+            )
+            content.risk_note = None
+            sync_content_to_draft(content, draft)
+            draft.rework_feedback = f"Auto-upgraded via {prov}"
+            await session.commit()
+            return draft
+        except Exception as exc:
+            logger.warning("Could not auto-upgrade draft via OpenRouter: %s", exc)
+
+    # 3. Fallback to upgraded dynamic fallback
+    from services.fallback_content import fallback_generate_draft
+    from services.draft_content import draft_to_content, sync_content_to_draft
+    res = fallback_generate_draft(
+        name=project.name,
+        raw_text=draft.summary or project.name,
+        chain=project.chain,
+        category=project.category or "airdrop",
+        project_url=draft.project_url or project.project_url,
+    )
+    content = draft_to_content(res, project)
+    content.risk_note = None
+    sync_content_to_draft(content, draft)
+    await session.commit()
+    return draft
+
 
 async def _replace_review_message(
     callback: CallbackQuery,
@@ -205,6 +257,7 @@ async def _replace_review_message(
         if not project or not project.latest_draft():
             return
         draft = project.latest_draft()
+        draft = await _ensure_upgraded_draft(session, project, draft)
         if draft.image_path:
             await ensure_draft_image(project, draft)
             await session.commit()
@@ -311,6 +364,7 @@ async def _open_review_queue(message: Message) -> None:
         if not draft:
             await message.answer("В очереди найден проект без черновика.")
             return
+        draft = await _ensure_upgraded_draft(session, project, draft)
         user_id = message.from_user.id if message.from_user else 0
         if user_id:
             last_active_project[user_id] = project.id

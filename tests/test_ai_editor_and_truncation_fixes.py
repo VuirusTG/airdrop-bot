@@ -546,12 +546,12 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
     async def test_remove_and_update_risk_note(self):
         """Verify that 'убери раздел Risk с поста для телеграмма' cleanly removes risk_note."""
         content = self._sample_draft_content()
-        content.risk_note = "Airdrop allocations and tokenomics are not yet finalized."
+        content.risk_note = "High volatility and smart contract risk."
         
-        # Verify initial rendering contains Risk section
+        # Verify initial rendering contains custom Risk section
         initial_post = content.render_telegram_post()
         self.assertIn("⚠️ Risk:", initial_post)
-        self.assertIn("Airdrop allocations", initial_post)
+        self.assertIn("High volatility", initial_post)
 
         # 1. Fast deterministic parse for exact user query
         cmd = "убери раздел Risk с поста для телеграмма"
@@ -570,7 +570,7 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
         # 3. Verify Telegram post rendering has NO Risk block
         rendered_tg = updated.render_telegram_post()
         self.assertNotIn("⚠️ Risk:", rendered_tg)
-        self.assertNotIn("Airdrop allocations", rendered_tg)
+        self.assertNotIn("High volatility", rendered_tg)
         # Verify other fields remain intact
         self.assertEqual(updated.potential_reward, content.potential_reward)
         self.assertEqual(updated.title, content.title)
@@ -794,8 +794,74 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(prov, "Pollinations Flux")
             mock_wb.assert_called_once()
 
+    async def test_dynamic_reward_and_task_extraction(self):
+        """Verify dynamic token reward, action tasks extraction, and legacy draft sanitization."""
+        from services.fallback_content import (
+            _extract_reward_info,
+            _extract_dynamic_tasks,
+            _build_engaging_description,
+            fallback_generate_draft
+        )
+        from db.models import Draft
+
+        raw_memebook = (
+            "Memebook is a Solana social app where users earn XP by posting and engaging, "
+            "receive SOL tips, and prepare for the confirmed Memebook Airdrop as $MBK moves toward TGE. "
+            "Beyond XP, the reward system includes Creator NFTs with $MBK airdrop. "
+            "This draft was created without AI, so confirm all details on the official page before publishing."
+        )
+
+        # 1. Reward extraction detects token $MBK and NFTs, NOT 'no reward confirmed'
+        reward = _extract_reward_info(raw_memebook)
+        self.assertIn("$MBK", reward)
+        self.assertNotIn("No reward or token allocation is confirmed", reward)
+
+        # 2. Dynamic tasks extract action steps
+        tasks = _extract_dynamic_tasks("Memebook", raw_memebook, "airdrop", "https://memebook.app")
+        self.assertTrue(len(tasks) >= 2)
+        tasks_text = " ".join(tasks).lower()
+        self.assertTrue("xp" in tasks_text or "post" in tasks_text or "tip" in tasks_text or "nft" in tasks_text)
+        self.assertNotIn("open the official project page using the link below", tasks_text)
+
+        # 3. Description has paragraph separation and no robotic disclaimer
+        desc = _build_engaging_description("Memebook", raw_memebook, "Solana", "airdrop")
+        self.assertIn("\n\n", desc)
+        self.assertNotIn("without AI", desc)
+        self.assertNotIn("The source reports:", desc)
+
+        # 4. Fallback generator output is high-quality
+        draft_res = fallback_generate_draft("Memebook", raw_memebook, "Solana", "airdrop", "https://memebook.app")
+        self.assertIn("$MBK", draft_res.potential_reward)
+        self.assertIsNone(draft_res.risk_note)
+        self.assertIn("🪂", draft_res.twitter_text)
+        self.assertLessEqual(len(draft_res.twitter_text), 280)
+
+        # 5. Legacy draft rendered_text automatic sanitization
+        legacy_draft = Draft(
+            project_id=106,
+            title="Memebook Airdrop: New Airdrop Opportunity",
+            summary=raw_memebook,
+            instructions=(
+                "1. Open the official project page using the link below.\n"
+                "2. Verify that the campaign is active and review its eligibility rules.\n"
+                "3. Follow only the tasks listed by the project on its official page.\n"
+                "4. Use a separate wallet and verify every transaction before signing."
+            ),
+            potential_reward="No reward or token allocation is confirmed. Participation may not lead to an airdrop.",
+            risk_note="Verify the domain and official accounts; never share a seed phrase or private key.",
+            project_url="https://memebook.app",
+        )
+        rendered = legacy_draft.rendered_text()
+        self.assertNotIn("without AI", rendered)
+        self.assertNotIn("No reward or token allocation is confirmed", rendered)
+        self.assertIn("$MBK", rendered)
+        self.assertNotIn("⚠️ Risk:", rendered)
+        self.assertNotIn("Verify the domain", rendered)
+        self.assertNotIn("Use a separate wallet", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

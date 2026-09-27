@@ -23,17 +23,23 @@ ALL public-facing copy (both Telegram and Twitter) MUST be written in natural, f
 
 TELEGRAM REQUIREMENTS (English):
 - Title: Clear, scroll-stopping title in English with project name, e.g. "🔥 Lighter DEX: $30M LIT Airdrop & Testnet".
-- Description: 2-3 engaging, concise sentences in natural, crisp English explaining what the project is, why it matters, and the value proposition. Never use robotic boilerplate like "This draft was created without AI".
-- Tasks: 3-5 concrete actionable numbered steps in English (each step <= 120 chars, starting with an action verb, no ellipsis, no filler).
-- Potential Reward: Clear realistic reward statement, e.g. "$1000+", "11M $LIT Pool", "Points & TGE Token Allocation".
+- Description: 2 distinct, punchy paragraphs separated by a blank line (\\n\\n). NEVER a single unbroken wall of text!
+  * Paragraph 1: High-impact hook explaining what the project is, its innovative edge, and ecosystem.
+  * Paragraph 2: Core mechanics of the campaign and how users qualify.
+  * NEVER use robotic boilerplate like "This draft was created without AI", "The source reports:", or "appears to have a new".
+- Tasks: 3-4 concrete actionable numbered steps in English (each step <= 100 chars, starting with an action verb).
+  * CRITICAL: NEVER write generic advice like "Open the official website", "Verify campaign", "Do your own research", or "Use a burner wallet".
+  * Every task MUST be a specific, verifiable project activity (e.g., "Post and engage on the feed to farm XP", "Trade on the orderbook DEX to build volume", "Stake SOL in the liquidity pool", "Mint Creator Pass NFT").
+- Potential Reward: Specific token or reward statement. If the raw text mentions a token (e.g. $MBK, $LIT), a pool size (e.g. $30M), XP, or NFTs, YOU MUST USE IT (e.g., "$MBK Token Airdrop (Confirmed for TGE)", "11M $LIT Pool", "XP & Points Allocation"). NEVER state "No reward confirmed" if the context mentions tokens or airdrops!
 - Network: Chain name (e.g. "Arbitrum", "Base", "Solana", "Ethereum", "EVM").
 
 TWITTER / X REQUIREMENTS (English):
-- Single ready-to-post tweet, STRICTLY <= 280 characters in English.
-- Scroll-stopping hook on line 1.
-- Brief context + 1 compact action.
-- Include verified project URL exactly once.
-- End with short conversational call to action ("Worth testing?", "Farming this?") + 1-2 hashtags (#airdrop, #testnet).
+- Single ready-to-post tweet, STRICTLY <= 280 characters in English with high-converting structure:
+  * Line 1: Scroll-stopping hook with emoji (e.g., "🪂 New Airdrop Alert: [Project] on #[Chain]!").
+  * Line 2: Value proposition & reward (e.g., "💰 [Reward] confirmed ahead of TGE.").
+  * Line 3: 2 quick bullet tasks (e.g., "• Farm XP by posting\\n• Mint early NFT").
+  * Line 4: Verified project URL + CTA + hashtags (#airdrop #crypto).
+  * Total length MUST be <= 280 characters.
 
 IMAGE METADATA:
 - theme_color: "lime" (default), "cyan", "violet", "gold", "red", or "orange".
@@ -43,11 +49,11 @@ Respond ONLY with valid JSON:
 {
   "title": "<engaging English title>",
   "category": "AIRDROP" | "TESTNET" | "QUEST" | "POINTS",
-  "description": "<2-3 concise English sentences>",
+  "description": "<2 punchy English paragraphs separated by \\n\\n>",
   "tasks": ["<step 1 in English>", "<step 2 in English>", "<step 3 in English>"],
-  "potential_reward": "<e.g. $1000+ or null>",
+  "potential_reward": "<specific token/reward e.g. $MBK Token Airdrop>",
   "network": "<network name or null>",
-  "twitter_text": "<ready tweet in English <= 280 chars>",
+  "twitter_text": "<ready tweet in English <= 280 chars with bullets>",
   "theme_color": "lime" | "cyan" | "violet" | "gold" | "red" | "orange",
   "image_prompt": "<English visual background prompt>"
 }"""

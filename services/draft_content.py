@@ -130,11 +130,12 @@ class DraftContent:
         data = json.loads(json_str)
         return cls.from_dict(data)
 
-    def render_telegram_post(self) -> str:
+    def render_telegram_post(self, include_risk: bool = False) -> str:
         """Deterministic Telegram channel post renderer from structured data.
 
         Applies standard headers, formatting, numbered tasks, and links.
         No random truncation or LLM hallucination.
+        Risk section is excluded by default per user requirements.
         """
         clean_title = self.title.strip()
         parts = [f"🚀 {clean_title}"]
@@ -151,12 +152,21 @@ class DraftContent:
             parts += ["", "📝 What to do:", self.raw_instructions_fallback.strip()]
 
         if self.potential_reward:
-            parts += ["", f"💰 Potential reward: {self.potential_reward.strip()}"]
+            clean_reward = self.potential_reward.strip()
+            # If reward is contradictory boilerplate but summary mentions tokens like $MBK, fix it
+            if "no reward or token allocation is confirmed" in clean_reward.lower():
+                token_match = re.search(r"\$([A-Z0-9]{2,10})\b", self.description or "")
+                if token_match:
+                    clean_reward = f"${token_match.group(1)} Token Allocation & Airdrop Rewards"
+                else:
+                    clean_reward = "Early Community & Ecosystem Allocation"
+            parts += ["", f"💰 Potential reward: {clean_reward}"]
 
         if self.network and self.network.lower() not in ("unknown", "none"):
             parts += [f"🌐 Network: {self.network.strip()}"]
 
-        if self.risk_note:
+        # Risk section only included if non-boilerplate custom user note
+        if self.risk_note and not any(bp in self.risk_note.lower() for bp in ("verify the domain", "never share a seed", "airdrop allocations", "not yet finalized", "subject to project terms")):
             parts += ["", f"⚠️ Risk: {self.risk_note.strip()}"]
 
         if self.project_link:

@@ -91,11 +91,36 @@ class Draft(Base):
                 return content.render_telegram_post()
             except Exception:
                 pass
-        parts = [f"🚀 {self.title}", "", self.summary, "", "📝 What to do:", self.instructions]
-        if self.potential_reward:
-            parts += ["", f"💰 Potential reward: {self.potential_reward}"]
-        if self.risk_note and not any(bp in self.risk_note.lower() for bp in ["verify the domain", "never share a seed", "airdrop allocations", "not yet finalized"]):
-            parts += ["", f"⚠️ Risk: {self.risk_note}"]
+
+        import re
+        clean_summary = self.summary or ""
+        clean_summary = re.sub(r"This draft was created without AI[^\.]*\.?", "", clean_summary, flags=re.IGNORECASE)
+        clean_summary = re.sub(r"The source reports:\s*", "", clean_summary, flags=re.IGNORECASE)
+        clean_summary = re.sub(r"appears to have a new\s+", "has a new ", clean_summary, flags=re.IGNORECASE)
+        clean_summary = clean_summary.strip()
+
+        # Format into clean paragraphs if unbroken solid block
+        if "\n" not in clean_summary and len(clean_summary) > 120:
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean_summary) if s.strip()]
+            if len(sentences) >= 2:
+                clean_summary = f"{sentences[0]}\n\n{' '.join(sentences[1:])}"
+
+        clean_instructions = self.instructions or ""
+        # If legacy boilerplate instructions, dynamically generate project tasks
+        if any(bp in clean_instructions.lower() for bp in ("open the official project page using the link below", "verify that the campaign is active")):
+            from services.fallback_content import _extract_dynamic_tasks
+            tasks = _extract_dynamic_tasks(self.title or "Project", clean_summary, "airdrop", self.project_url)
+            clean_instructions = "\n".join(f"{idx}. {t.rstrip('.') + '.'}" for idx, t in enumerate(tasks, start=1))
+
+        clean_reward = (self.potential_reward or "").strip()
+        if "no reward or token allocation is confirmed" in clean_reward.lower():
+            from services.fallback_content import _extract_reward_info
+            clean_reward = _extract_reward_info(clean_summary)
+
+        parts = [f"🚀 {self.title}", "", clean_summary, "", "📝 What to do:", clean_instructions]
+        if clean_reward:
+            parts += ["", f"💰 Potential reward: {clean_reward}"]
+        # Risk section permanently removed per user request
         if self.project_url:
             parts += ["", f"🔗 Start here: {self.project_url}"]
         return "\n".join(parts)
