@@ -54,22 +54,33 @@ async def ensure_draft_image(project, draft) -> str | None:
         if resolved and resolved.is_file():
             return str(resolved)
 
-    # Missing on disk (e.g. after container restart or generated in GitHub Actions)
+    # Missing on disk or never generated (draft.image_path is None or file deleted)
     # Regenerate deterministic social card on demand.
     try:
-        from services.social_card import generate_social_card
+        from services.draft_content import parse_content_json, draft_to_content
+        from services.social_card import generate_social_card, render_social_card_from_content
 
-        card = await generate_social_card(
-            name=project.name,
-            category=project.category,
-            chain=project.chain,
-            instructions=draft.instructions,
-            official_image_url=None,
-            image_prompt=getattr(draft, "image_prompt", None),
-            project_url=getattr(draft, "project_url", None) or getattr(project, "project_url", None),
-            generation_key=f"project-{project.id}-v{getattr(draft, 'version', 1)}" if getattr(project, "id", None) else "initial",
-            potential_reward=getattr(draft, "potential_reward", None),
-        )
+        card = None
+        content = parse_content_json(getattr(draft, "content_json", None))
+        if not content:
+            content = draft_to_content(draft, project)
+
+        if content:
+            card = await render_social_card_from_content(content)
+
+        if not card or not card.path or not Path(card.path).is_file():
+            card = await generate_social_card(
+                name=project.name,
+                category=project.category,
+                chain=project.chain,
+                instructions=draft.instructions,
+                official_image_url=None,
+                image_prompt=getattr(draft, "image_prompt", None),
+                project_url=getattr(draft, "project_url", None) or getattr(project, "project_url", None),
+                generation_key=f"project-{project.id}-v{getattr(draft, 'version', 1)}" if getattr(project, "id", None) else "initial",
+                potential_reward=getattr(draft, "potential_reward", None),
+            )
+
         if card and card.path and Path(card.path).is_file():
             draft.image_path = card.path
             draft.image_source = card.source

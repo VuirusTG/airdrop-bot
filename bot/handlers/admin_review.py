@@ -197,9 +197,16 @@ async def _ensure_upgraded_draft(session: AsyncSession, project: Project, draft:
         draft.risk_note is not None
         or (draft.summary and any(m in draft.summary.lower() for m in ("without ai", "the source reports:", "appears to have a new")))
         or (draft.instructions and any(m in draft.instructions.lower() for m in ("open the official project page using the link below", "verify that the campaign is active")))
+        or (draft.instructions and "http" in draft.instructions.lower())
         or (draft.potential_reward and "no reward or token allocation is confirmed" in draft.potential_reward.lower())
     )
     if not is_legacy:
+        if not draft.image_path:
+            try:
+                await ensure_draft_image(project, draft)
+                await session.commit()
+            except Exception:
+                pass
         return draft
 
     # 1. Clean risk_note permanently
@@ -221,6 +228,10 @@ async def _ensure_upgraded_draft(session: AsyncSession, project: Project, draft:
             content.risk_note = None
             sync_content_to_draft(content, draft)
             draft.rework_feedback = f"Auto-upgraded via {prov}"
+            try:
+                await ensure_draft_image(project, draft)
+            except Exception as exc:
+                logger.warning("ensure_draft_image failed during AI upgrade for #%s: %s", project.id, exc)
             await session.commit()
             return draft
         except Exception as exc:
@@ -239,6 +250,10 @@ async def _ensure_upgraded_draft(session: AsyncSession, project: Project, draft:
     content = draft_to_content(res, project)
     content.risk_note = None
     sync_content_to_draft(content, draft)
+    try:
+        await ensure_draft_image(project, draft)
+    except Exception as exc:
+        logger.warning("ensure_draft_image failed during fallback upgrade for #%s: %s", project.id, exc)
     await session.commit()
     return draft
 
@@ -258,9 +273,11 @@ async def _replace_review_message(
             return
         draft = project.latest_draft()
         draft = await _ensure_upgraded_draft(session, project, draft)
-        if draft.image_path:
+        try:
             await ensure_draft_image(project, draft)
             await session.commit()
+        except Exception as exc:
+            logger.warning("ensure_draft_image failed for project #%s: %s", project.id, exc)
 
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
         if keyboard is None:
@@ -368,12 +385,11 @@ async def _open_review_queue(message: Message) -> None:
         user_id = message.from_user.id if message.from_user else 0
         if user_id:
             last_active_project[user_id] = project.id
-        if draft.image_path:
-            try:
-                await ensure_draft_image(project, draft)
-                await session.commit()
-            except Exception as exc:
-                logger.warning("ensure_draft_image failed for project #%s: %s", project.id, exc)
+        try:
+            await ensure_draft_image(project, draft)
+            await session.commit()
+        except Exception as exc:
+            logger.warning("ensure_draft_image failed for project #%s: %s", project.id, exc)
 
         position, total, previous_id, next_id = _queue_meta(queue, project.id)
         can_undo = await VersionManager.can_undo(session, draft.id)
@@ -1227,12 +1243,11 @@ async def _execute_and_apply_plan(
     )
     await session.commit()
 
-    if draft.image_path:
-        try:
-            await ensure_draft_image(project, draft)
-            await session.commit()
-        except Exception:
-            pass
+    try:
+        await ensure_draft_image(project, draft)
+        await session.commit()
+    except Exception:
+        pass
 
     queue = await _review_queue(session)
     position, total, previous_id, next_id = _queue_meta(queue, project.id)
@@ -1613,12 +1628,11 @@ async def on_undo_edit(callback: CallbackQuery):
             await callback.answer(status_msg or "Невозможно отменить.", show_alert=True)
             return
 
-        if draft.image_path:
-            try:
-                await ensure_draft_image(project, draft)
-                await session.commit()
-            except Exception:
-                pass
+        try:
+            await ensure_draft_image(project, draft)
+            await session.commit()
+        except Exception:
+            pass
 
         queue = await _review_queue(session)
         position, total, previous_id, next_id = _queue_meta(queue, project.id)

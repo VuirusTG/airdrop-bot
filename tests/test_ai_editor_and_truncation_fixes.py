@@ -859,6 +859,87 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Verify the domain", rendered)
         self.assertNotIn("Use a separate wallet", rendered)
 
+    async def test_post_108_iris_credit_quality_and_image_guarantee(self):
+        """Verify that IRIS Credit-style posts have no raw URLs, 2 crisp paragraphs, no Risk, and guaranteed images."""
+        from pathlib import Path
+        from services.fallback_content import (
+            _clean_project_name,
+            _deduplicate_phrases,
+            _extract_dynamic_tasks,
+            _build_engaging_description,
+            _x_post,
+            fallback_generate_draft,
+        )
+        from services.media import ensure_draft_image
+
+        raw_iris = (
+            "IRIS Credit Airdrop IRIS Credit Airdrop is an on-chain credit protocol built on Base. "
+            "Users can deposit collateral and borrow against crypto assets to earn early protocol allocation. "
+            "Submit the access form (https://docs.google.com/forms/d/e/1FAIpQLSe-0Pj7eSj85V437340/viewform) to get early access."
+        )
+        proj_url = "https://docs.google.com/forms/d/e/1FAIpQLSe-0Pj7eSj85V437340/viewform"
+
+        # 1. Name cleaning
+        clean_name = _clean_project_name("IRIS Credit Airdrop")
+        self.assertEqual(clean_name, "IRIS Credit")
+
+        # 2. Phrase deduplication
+        deduped = _deduplicate_phrases("IRIS Credit Airdrop IRIS Credit Airdrop is an on-chain credit protocol")
+        self.assertEqual(deduped, "IRIS Credit Airdrop is an on-chain credit protocol")
+
+        # 3. Dynamic tasks MUST NEVER contain raw URLs
+        tasks = _extract_dynamic_tasks("IRIS Credit Airdrop", raw_iris, "airdrop", proj_url)
+        self.assertTrue(len(tasks) >= 2)
+        for t in tasks:
+            self.assertNotIn("http://", t)
+            self.assertNotIn("https://", t)
+            self.assertNotIn("docs.google.com", t)
+
+        # 4. Engaging description must be 2 paragraphs and not duplicate title
+        desc = _build_engaging_description("IRIS Credit Airdrop", raw_iris, "Base", "airdrop")
+        self.assertIn("\n\n", desc)
+        self.assertNotIn("IRIS Credit Airdrop IRIS Credit Airdrop", desc)
+        self.assertNotIn("without AI", desc)
+
+        # 5. Twitter text strictly <= 280 chars, clean title, no 'Airdrop Airdrop'
+        tw = _x_post("IRIS Credit Airdrop", "airdrop", proj_url, "$IRIS Token Allocation", "Base", tasks)
+        self.assertLessEqual(len(tw), 280)
+        self.assertNotIn("Airdrop Airdrop", tw)
+        self.assertIn("IRIS Credit", tw)
+
+        # 6. Fallback draft generation
+        res = fallback_generate_draft("IRIS Credit Airdrop", raw_iris, "Base", "airdrop", proj_url)
+        self.assertIsNone(res.risk_note)
+        self.assertNotIn("http", res.instructions)
+
+        # 7. Ensure image is generated even if image_path is None
+        project = Project(
+            id=108,
+            name="IRIS Credit Airdrop",
+            category="airdrop",
+            chain="Base",
+            source_url="https://t.me/source",
+            project_url=proj_url,
+        )
+        draft = Draft(
+            project_id=108,
+            title=res.title,
+            summary=res.summary,
+            instructions=res.instructions,
+            potential_reward=res.potential_reward,
+            risk_note=None,
+            image_path=None,  # Missing on purpose!
+            project_url=proj_url,
+        )
+        img_path = await ensure_draft_image(project, draft)
+        self.assertIsNotNone(img_path)
+        self.assertIsNotNone(draft.image_path)
+        self.assertTrue(Path(draft.image_path).is_file())
+
+        # Rendered text should have no Risk section
+        rendered = draft.rendered_text()
+        self.assertNotIn("⚠️ Risk:", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

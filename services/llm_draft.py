@@ -17,17 +17,19 @@ for a seed phrase or private key.
 
 Telegram requirements:
 - Clear title, 2-3 sentence summary, and specific numbered actions.
-- Separate potential reward and risk fields.
+- Do NOT generate risk_note or include any risk section (set risk_note to null).
 - Do not include the private source URL. It is shown separately to the admin.
 - Never put any URL in title, summary, instructions, potential_reward, or risk_note.
   The app adds the verified project URL separately as a Start here line.
+- Summary: 2 concise, informative paragraphs separated by \n\n. Factual description of what the project is and what early users qualify for. Do NOT repeat the project name multiple times.
+- Instructions: 3-4 clear, actionable numbered steps (e.g. 1. Action, 2. Action). NEVER include raw URLs in instructions.
+- Potential reward: Specific token ticker ($TOKEN), points program, or pool size. NEVER output contradictory boilerplate like 'No reward or token allocation is confirmed'.
 - Keep the combined Telegram copy under 950 characters so it fits in a photo caption.
 
 X/Twitter requirements:
 - One ready-to-publish post, maximum 280 characters. Aim for 220-275 characters.
 - Line 1: a scroll-stopping hook built from the strongest specific verified fact.
 - Then explain why the opportunity may be worth watching and give one compact action.
-- State reward uncertainty or the main risk honestly.
 - End with a short natural conversation prompt when space allows, such as
   "Worth farming?" or "Would you test it?", followed by 1-2 specific hashtags.
 - Use at most one relevant emoji. Use short lines for mobile readability.
@@ -35,7 +37,7 @@ X/Twitter requirements:
 - Never include the private source URL, generic hype ("Huge opportunity", "Don't
   miss out", "Next 100x"), fake urgency, engagement begging, or more than 2 hashtags.
 - Example style (do not copy facts):
-  "A new testnet just put early users on the map.\n\nZK Atlas is tracking swaps and liquidity tasks. Rewards are unconfirmed, so use a test wallet and watch the costs.\n\nWorth testing?\n#testnet #airdrop"
+  "A new testnet just put early users on the map.\n\nZK Atlas is tracking swaps and liquidity tasks. Early points are live.\n\nWorth testing?\n#testnet #airdrop"
 
 Image prompt requirements:
 - Produce a polished 16:9 editorial crypto visual prompt in English.
@@ -46,10 +48,10 @@ Image prompt requirements:
 Respond with ONLY JSON:
 {
   "title": "<short title with project name>",
-  "summary": "<2-3 factual sentences>",
+  "summary": "<2 distinct paragraphs separated by \\n\\n>",
   "instructions": "<numbered plain-text steps separated by \\n>",
-  "potential_reward": "<realistic statement or null>",
-  "risk_note": "<one honest sentence or null>",
+  "potential_reward": "<specific token or pool, or null>",
+  "risk_note": null,
   "twitter_text": "<complete post, <=280 characters>",
   "image_prompt": "<English generation prompt>"
 }"""
@@ -68,11 +70,16 @@ class DraftResult:
 
 def _parse_draft(response_text: str) -> DraftResult:
     data = json.loads(response_text)
+    pot_reward = data.get("potential_reward")
+    if pot_reward and "no reward or token allocation is confirmed" in pot_reward.lower():
+        from services.fallback_content import _extract_reward_info
+        pot_reward = _extract_reward_info(data.get("summary") or "")
+
     return DraftResult(
         title=data["title"],
         summary=data["summary"],
         instructions=data["instructions"],
-        potential_reward=data.get("potential_reward"),
+        potential_reward=pot_reward,
         risk_note=None,
         twitter_text=data.get("twitter_text", "").strip() or None,
         image_prompt=data.get("image_prompt"),

@@ -250,11 +250,10 @@ async def process_raw_signal(
 
         # One candidate = one Telegram review message. This is important for
         # webhook delivery and makes Previous/Next edit a single stable message.
-        if draft.image_path:
-            try:
-                await ensure_draft_image(project, draft)
-            except Exception:
-                pass
+        try:
+            await ensure_draft_image(project, draft)
+        except Exception:
+            pass
 
         photo_input = telegram_photo(draft.image_path) if draft.image_path else None
         caption = _review_caption(project, draft)

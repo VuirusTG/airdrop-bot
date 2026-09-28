@@ -16,16 +16,25 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_DEFAULT_TIMEOUT = 45.0
+OPENROUTER_DEFAULT_TIMEOUT = 25.0
 
 
 def _extract_json_text(text: str) -> str:
-    """Extract raw JSON text even if wrapped in markdown codeblocks."""
+    """Extract raw JSON text even if wrapped in markdown codeblocks or conversational fluff."""
     cleaned = text.strip()
     if "```json" in cleaned:
         cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
     elif "```" in cleaned:
         cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
+
+    # Find outermost { ... }
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        cleaned = cleaned[start : end + 1]
+
+    # Clean trailing commas in objects and arrays before closing brackets
+    cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
     return cleaned
 
 
@@ -72,14 +81,14 @@ async def generate_chat_completion(
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         for attempt in range(1, 4):
-            # On final retry attempt, explicitly switch the primary target to the fallback model
-            if attempt == 3 and fallback_model and fallback_model != target_model:
+            # On attempt 2 or 3, switch to fallback model if primary is struggling
+            if attempt >= 2 and fallback_model and fallback_model != target_model:
                 payload["model"] = fallback_model
 
             try:
                 resp = await client.post(url, headers=headers, json=payload)
                 if resp.status_code == 429:
-                    wait_sec = attempt * 2.0
+                    wait_sec = attempt * 1.5
                     logger.warning(
                         "OpenRouter rate limited (429) for %s, backing off for %.1fs (attempt %d/3)",
                         payload["model"],
@@ -89,9 +98,10 @@ async def generate_chat_completion(
                     await asyncio.sleep(wait_sec)
                     continue
 
-                if resp.status_code == 400 and "response_format" in payload:
+                if resp.status_code in (400, 422) and "response_format" in payload:
                     logger.warning(
-                        "OpenRouter returned 400 with response_format for %s: %s; retrying without response_format constraint",
+                        "OpenRouter returned %s with response_format for %s: %s; retrying without response_format constraint",
+                        resp.status_code,
                         payload["model"],
                         resp.text[:200],
                     )
@@ -113,12 +123,12 @@ async def generate_chat_completion(
                 logger.warning("OpenRouter HTTP error %s for %s: %s", exc.response.status_code, payload["model"], exc.response.text[:300])
                 if attempt == 3:
                     raise
-                await asyncio.sleep(attempt * 1.5)
+                await asyncio.sleep(attempt * 1.0)
             except (httpx.RequestError, asyncio.TimeoutError) as exc:
                 logger.warning("OpenRouter network error on attempt %d for %s: %s", attempt, payload["model"], exc)
                 if attempt == 3:
                     raise
-                await asyncio.sleep(attempt * 1.5)
+                await asyncio.sleep(attempt * 1.0)
 
     raise RuntimeError("OpenRouter request failed after 3 attempts")
 
@@ -129,17 +139,28 @@ async def generate_json(
     model: str | None = None,
     temperature: float = 0.2,
 ) -> str:
-    """Generate structured JSON via OpenRouter."""
+    """Generate structured JSON via OpenRouter with graceful degradation."""
     messages = [
         {"role": "system", "content": system_instruction},
         {"role": "user", "content": contents},
     ]
-    raw_response = await generate_chat_completion(
-        messages=messages,
-        model=model,
-        temperature=temperature,
-        response_format={"type": "json_object"},
-    )
+    try:
+        raw_response = await generate_chat_completion(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            response_format={"type": "json_object"},
+            timeout=20.0,
+        )
+    except Exception as exc:
+        logger.warning("OpenRouter json_object request failed: %s; retrying without format constraint", exc)
+        raw_response = await generate_chat_completion(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            response_format=None,
+            timeout=20.0,
+        )
     return _extract_json_text(raw_response)
 
 

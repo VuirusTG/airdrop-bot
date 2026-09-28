@@ -185,6 +185,16 @@ class DraftContent:
         return self.raw_instructions_fallback or ""
 
 
+def parse_content_json(json_str: str | None) -> DraftContent | None:
+    """Safely parse JSON string into DraftContent, returning None on failure."""
+    if not json_str or not str(json_str).strip():
+        return None
+    try:
+        return DraftContent.from_json(json_str)
+    except Exception:
+        return None
+
+
 def parse_legacy_instructions(instructions_text: str | None) -> tuple[list[str], bool]:
     """Deterministically parse legacy instructions string into structured tasks[].
 
@@ -249,7 +259,7 @@ def draft_to_content(draft: Any, project: Any = None) -> DraftContent:
     )
 
     legacy_risk = getattr(draft, "risk_note", None)
-    if legacy_risk and any(bp in legacy_risk.lower() for bp in ["verify the domain", "never share a seed", "airdrop allocations", "not yet finalized"]):
+    if legacy_risk and any(bp in legacy_risk.lower() for bp in ["verify the domain", "never share a seed", "airdrop allocations", "not yet finalized", "subject to project terms"]):
         legacy_risk = None
 
     return DraftContent(
