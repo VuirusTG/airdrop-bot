@@ -940,6 +940,38 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
         rendered = draft.rendered_text()
         self.assertNotIn("⚠️ Risk:", rendered)
 
+    def test_sanitize_description_collapses_bloated_text(self):
+        """Verify that _sanitize_description cuts long corporate PR text down to <= 32 words and max 2 sentences."""
+        from services.ai_editor_llm import _sanitize_description
+        bloated_text = (
+            "Savior of Health is an innovative Web3 wellness ecosystem introducing a live Healdrop campaign where users can earn rewards for healthy habits. "
+            "By combining survey-to-earn mechanics, daily health tracking, and decentralized crowd predictions, the platform redefines incentivized fitness and self-care.\n\n"
+            "Participants can actively farm Heal Points to climb the global leaderboard and secure their allocation. "
+            "Engage with the live Healdrop by maintaining daily streaks, completing wellness surveys, referring peers, and minting soulbound NFT badges to lock in your eligibility."
+        )
+        cleaned = _sanitize_description(bloated_text)
+        self.assertLessEqual(len(cleaned.split()), 32)
+        self.assertNotIn("innovative", cleaned)
+        self.assertNotIn("redefines", cleaned)
+        self.assertNotIn("Participants can actively farm", cleaned)
+        self.assertNotIn("\n", cleaned)
+        self.assertTrue(cleaned.startswith("Savior of Health is a Web3 wellness ecosystem"))
+
+    def test_render_telegram_post_no_duplicate_emoji(self):
+        """Verify that render_telegram_post does not duplicate emoji if title already has one."""
+        from services.draft_content import DraftContent
+        content = DraftContent(
+            title="🔥 Savior of Health — Heal Points & NFT Airdrop",
+            description="Savior of Health is a Web3 wellness dApp on BNB Chain.",
+            tasks=["Connect wallet", "Mint soulbound NFT"],
+            potential_reward="Heal Points & NFTs",
+            network="BNB Chain",
+            project_link="https://saviorofhealth.app",
+        )
+        rendered = content.render_telegram_post()
+        self.assertNotIn("🚀 🔥", rendered)
+        self.assertTrue(rendered.startswith("🔥 Savior of Health"))
+
 
 if __name__ == "__main__":
     unittest.main()

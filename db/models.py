@@ -117,7 +117,9 @@ class Draft(Base):
             from services.fallback_content import _extract_reward_info
             clean_reward = _extract_reward_info(clean_summary)
 
-        parts = [f"🚀 {self.title}", "", clean_summary, "", "📝 What to do:", clean_instructions]
+        title_str = (self.title or "Project").strip()
+        has_leading_emoji = bool(re.match(r"^[\U00010000-\U0010ffff\u2600-\u27bf\u2300-\u23ff]", title_str))
+        parts = [title_str if has_leading_emoji else f"🚀 {title_str}", "", clean_summary, "", "📝 What to do:", clean_instructions]
         if clean_reward:
             parts += ["", f"💰 Potential reward: {clean_reward}"]
         # Risk section permanently removed per user request

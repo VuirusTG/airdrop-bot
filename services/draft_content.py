@@ -138,7 +138,8 @@ class DraftContent:
         Risk section is excluded by default per user requirements.
         """
         clean_title = self.title.strip()
-        parts = [f"🚀 {clean_title}"]
+        has_leading_emoji = bool(re.match(r"^[\U00010000-\U0010ffff\u2600-\u27bf\u2300-\u23ff]", clean_title))
+        parts = [clean_title if has_leading_emoji else f"🚀 {clean_title}"]
         if self.description:
             parts += ["", self.description.strip()]
 

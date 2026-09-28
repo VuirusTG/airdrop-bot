@@ -17,43 +17,137 @@ from services.task_validator import sanitize_task, validate_tasks
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT_INITIAL_DRAFT = """You are a top-tier crypto researcher and social media director.
-Analyze the raw crypto opportunity signal and generate a publication-ready editorial draft for Telegram and Twitter.
-ALL public-facing copy (both Telegram and Twitter) MUST be written in natural, fluent English.
+def _sanitize_description(desc: str) -> str:
+    """Enforce brevity on description: strictly 1-2 punchy sentences, <= 32 words, strip corporate PR buzzwords."""
+    if not desc:
+        return ""
+    # Strip known boilerplate
+    desc = re.sub(r"This draft was created without AI[^\.]*\.?", "", desc, flags=re.IGNORECASE).strip()
+    desc = re.sub(r"The source reports:\s*", "", desc, flags=re.IGNORECASE).strip()
+    # Strip marketing buzzwords
+    desc = re.sub(r"\b(?:innovative|revolutionary|cutting-edge|redefines|seamlessly)\s+", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"\ban\s+Web3\b", "a Web3", desc, flags=re.IGNORECASE)
 
-TELEGRAM REQUIREMENTS (English):
-- Title: Clear, scroll-stopping title in English with project name, e.g. "🔥 Lighter DEX: $30M LIT Airdrop & Testnet".
-- Description: 2 distinct, punchy paragraphs separated by a blank line (\\n\\n). NEVER a single unbroken wall of text!
-  * Paragraph 1: High-impact hook explaining what the project is, its innovative edge, and ecosystem.
-  * Paragraph 2: Core mechanics of the campaign and how users qualify.
-  * NEVER use robotic boilerplate like "This draft was created without AI", "The source reports:", or "appears to have a new".
-- Tasks: 3-4 concrete actionable numbered steps in English (each step <= 100 chars, starting with an action verb).
+    # If LLM generated multiple paragraphs, take only the first paragraph
+    paragraphs = [p.strip() for p in desc.split("\n") if p.strip()]
+    first_p = paragraphs[0] if paragraphs else desc
+
+    # Split sentences
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", first_p) if s.strip()]
+    if not sentences:
+        return first_p.strip()
+
+    s0 = sentences[0]
+    if len(sentences) == 1:
+        words = s0.split()
+        if len(words) > 32:
+            s0 = " ".join(words[:28]).rstrip(",:;-") + "."
+        return s0.strip()
+
+    s1 = sentences[1]
+    s0_words = len(s0.split())
+    s1_words = len(s1.split())
+
+    if s0_words + s1_words <= 32:
+        return f"{s0} {s1}".strip()
+    elif s0_words >= 14:
+        return s0.strip()
+    else:
+        avail = 30 - s0_words
+        s1_part = " ".join(s1.split()[:avail]).rstrip(",:;-") + "."
+        return f"{s0} {s1_part}".strip()
+
+
+SYSTEM_PROMPT_INITIAL_DRAFT = """You are a top-tier crypto researcher and social media director for a premier crypto airdrop & alpha channel.
+Analyze the raw crypto opportunity signal and generate an ultra-concise, high-converting editorial draft for Telegram and Twitter.
+ALL public-facing copy MUST be written in natural, fluent English.
+
+CRITICAL TELEGRAM CHANNEL STYLE GUIDELINES (Inspired by top alpha channels like DropsTab, DeFi Airdrops, CryptoRank):
+- Telegram users scan posts in 3-5 seconds on mobile. Long descriptions and PR essays get skipped!
+- Title: Catchy headline starting with an emoji, e.g. "🔥 Lighter DEX — $30M Airdrop & Testnet" or "🔥 Savior of Health — Heal Points & NFT Airdrop".
+
+- Description: STRICTLY 1 to 2 SHORT, PUNCHY SENTENCES (20 to 35 words MAXIMUM).
+  * Sentence 1: What the project is + network/ecosystem (e.g., "Savior of Health is a Web3 wellness platform on BNB Chain.").
+  * Sentence 2: The value hook / reward opportunity (e.g., "Daily health streaks and wellness surveys earn Heal Points towards the upcoming token airdrop.").
+  * CRITICAL RULES:
+    1. NEVER write multiple paragraphs or long walls of text!
+    2. NEVER describe step-by-step instructions in the description (the steps are already listed below under 'What to do')!
+    3. BAN corporate marketing fluff and buzzwords: "innovative", "revolutionary", "redefines", "seamless", "cutting-edge", "introducing a live campaign where", "by combining X, Y, and Z mechanics", "empowers users to".
+    4. Write like a crypto alpha insider, NOT a corporate press release.
+
+- Tasks: 3-4 concrete actionable numbered steps in English (each step <= 65 chars, starting with an active imperative verb: Connect, Complete, Mint, Stake, Deposit, Farm, Claim).
   * CRITICAL: NEVER write generic advice like "Open the official website", "Verify campaign", "Do your own research", or "Use a burner wallet".
-  * Every task MUST be a specific, verifiable project activity (e.g., "Post and engage on the feed to farm XP", "Trade on the orderbook DEX to build volume", "Stake SOL in the liquidity pool", "Mint Creator Pass NFT").
-- Potential Reward: Specific token or reward statement. If the raw text mentions a token (e.g. $MBK, $LIT), a pool size (e.g. $30M), XP, or NFTs, YOU MUST USE IT (e.g., "$MBK Token Airdrop (Confirmed for TGE)", "11M $LIT Pool", "XP & Points Allocation"). NEVER state "No reward confirmed" if the context mentions tokens or airdrops!
-- Network: Chain name (e.g. "Arbitrum", "Base", "Solana", "Ethereum", "EVM").
+  * NEVER include raw URLs in task items (all links belong exclusively in the public link field).
+  * Every task MUST be a specific, verifiable project activity.
 
-TWITTER / X REQUIREMENTS (English):
-- Single ready-to-post tweet, STRICTLY <= 280 characters in English with high-converting structure:
-  * Line 1: Scroll-stopping hook with emoji (e.g., "🪂 New Airdrop Alert: [Project] on #[Chain]!").
-  * Line 2: Value proposition & reward (e.g., "💰 [Reward] confirmed ahead of TGE.").
-  * Line 3: 2 quick bullet tasks (e.g., "• Farm XP by posting\\n• Mint early NFT").
-  * Line 4: Verified project URL + CTA + hashtags (#airdrop #crypto).
+- Potential Reward: Short token/reward statement (e.g. "$MBK Token Airdrop (Confirmed for TGE)", "11M $LIT Pool", "Heal Points & Soulbound NFTs").
+  * NEVER state "No reward confirmed" if the context mentions tokens, airdrops, XP, points, or rewards!
+
+- Network: Chain name (e.g. "BNB Chain", "Arbitrum", "Base", "Solana", "Ethereum").
+
+TWITTER / X REQUIREMENTS:
+- Ready-to-post tweet, STRICTLY <= 280 characters in English with high-converting structure:
+  * Line 1: Hook with emoji (e.g., "🪂 [Project] Airdrop is live on #[Chain]!")
+  * Line 2: Value & reward (e.g., "💰 [Reward] confirmed ahead of TGE.")
+  * Line 3: 2 bullet tasks (e.g., "1⃣ Complete daily check-in\\n2⃣ Mint soulbound NFT")
+  * Line 4: Verified project URL + #airdrop #crypto
   * Total length MUST be <= 280 characters.
 
 IMAGE METADATA:
 - theme_color: "lime" (default), "cyan", "violet", "gold", "red", or "orange".
 - image_prompt: 16:9 English prompt for background atmosphere if generated.
 
+FEW-SHOT EXAMPLES OF DESIRED STYLE:
+
+Example 1:
+Input: Savior of Health project on BNB Chain with Healdrop, surveys, streaks, soulbound NFTs.
+Output:
+{
+  "title": "🔥 Savior of Health — Heal Points & NFT Airdrop",
+  "category": "AIRDROP",
+  "description": "Savior of Health is a Web3 wellness platform on BNB Chain. Users earn Heal Points and soulbound NFTs by completing daily health streaks and wellness surveys.",
+  "tasks": [
+    "Connect your wallet to the portal.",
+    "Complete daily wellness check-ins & surveys.",
+    "Mint your soulbound NFT on BNB Chain.",
+    "Farm Heal Points to rank up on the leaderboard."
+  ],
+  "potential_reward": "Heal Points & Soulbound NFT Airdrop",
+  "network": "BNB Chain",
+  "twitter_text": "🪂 Savior of Health Airdrop is live on #BNBChain!\\n\\n💰 Heal Points & NFTs\\n\\n1⃣ Complete daily wellness check-ins\\n2⃣ Mint soulbound NFT\\n\\n🔗 Farm here: https://saviorofhealth.app/ #airdrop #crypto",
+  "theme_color": "lime",
+  "image_prompt": "Futuristic bio-digital cyber wellness interface with glowing green vital telemetry and sleek dark glass"
+}
+
+Example 2:
+Input: Lighter DEX on Arbitrum, 30M LIT token pool, orderbook trading.
+Output:
+{
+  "title": "🔥 Lighter DEX — $30M LIT Airdrop & Testnet",
+  "category": "TESTNET",
+  "description": "Lighter is an institutional-grade orderbook DEX on Arbitrum. The team has launched an incentivized testnet with a confirmed 30M $LIT token reward pool.",
+  "tasks": [
+    "Connect your wallet to the Arbitrum testnet.",
+    "Claim faucet tokens and deposit test collateral.",
+    "Execute limit and market trades on the orderbook.",
+    "Track your trading volume and reward tier."
+  ],
+  "potential_reward": "30M $LIT Token Pool",
+  "network": "Arbitrum",
+  "twitter_text": "🪂 Lighter DEX Testnet is live on #Arbitrum!\\n\\n💰 30M $LIT Token Pool\\n\\n1⃣ Connect wallet to testnet\\n2⃣ Execute trades on orderbook\\n\\n🔗 Join here: https://lighter.xyz #airdrop #DeFi",
+  "theme_color": "cyan",
+  "image_prompt": "High-frequency cyber financial exchange holographic chart displays in electric cyan and deep indigo"
+}
+
 Respond ONLY with valid JSON:
 {
-  "title": "<engaging English title>",
+  "title": "<concise English title starting with emoji>",
   "category": "AIRDROP" | "TESTNET" | "QUEST" | "POINTS",
-  "description": "<2 punchy English paragraphs separated by \\n\\n>",
-  "tasks": ["<step 1 in English>", "<step 2 in English>", "<step 3 in English>"],
-  "potential_reward": "<specific token/reward e.g. $MBK Token Airdrop>",
+  "description": "<STRICTLY 1-2 sentences, max 35 words>",
+  "tasks": ["<step 1>", "<step 2>", "<step 3>", "<step 4>"],
+  "potential_reward": "<specific reward or token allocation>",
   "network": "<network name or null>",
-  "twitter_text": "<ready tweet in English <= 280 chars with bullets>",
+  "twitter_text": "<ready tweet in English <= 280 chars>",
   "theme_color": "lime" | "cyan" | "violet" | "gold" | "red" | "orange",
   "image_prompt": "<English visual background prompt>"
 }"""
@@ -79,13 +173,14 @@ EXAMPLES OF USER INTENT:
    - Set `image_operation` to "rerender_text".
    - `explanation`: "Изменена награда на $1000+ на карточке и в посте"
 
-2. "сделай текст поста лаконичным и завлекающим" or "сделай короче и понятнее":
-   - Rewrite `description` to be punchy, engaging, and concise (2-3 sentences).
-   - Refine `tasks` to be sharp and actionable.
+2. "сделай текст поста лаконичным и завлекающим" or "сделай короче и понятнее" or "слишком много текста":
+   - Rewrite `description` to be ULTRA-CONCISE (strictly 1-2 short sentences, max 30 words, explaining what the project is and why it matters).
+   - NEVER repeat the tasks in the description!
+   - Refine `tasks` to be sharp and actionable (under 65 chars each).
    - Keep existing `potential_reward`, `theme_color`, and `twitter_text` intact!
    - `modified_fields`: ["description", "tasks"]
    - Set `image_operation` to "rerender_text".
-   - `explanation`: "Текст поста переписан лаконично и завлекающе"
+   - `explanation`: "Текст описания сокращен до 1-2 емких предложений без лишней воды"
 
 3. "перепиши твит" or "сделай твит бодрее":
    - Rewrite `twitter_text` (strictly <= 280 chars, strong hook, includes project link).
@@ -122,7 +217,7 @@ EXAMPLES OF USER INTENT:
 
 RULES:
 - Maintain factual integrity: do not invent false URLs or seed phrase requests.
-- Tasks: max 5 steps, <= 120 chars each, no ellipsis ("..."), clear actionable verbs in English.
+- Tasks: max 4 steps, <= 65 chars each, no ellipsis ("..."), clear actionable verbs in English.
 - Twitter: <= 280 characters in English.
 - ALL public-facing text (title, description, tasks, potential reward, twitter_text) MUST be in natural, fluent English.
 
@@ -155,7 +250,7 @@ async def _call_llm_json(system_instruction: str, user_content: str) -> tuple[di
                 system_instruction=system_instruction,
                 contents=user_content,
                 model=settings.OPENROUTER_MODEL,
-                temperature=0.2,
+                temperature=0.35,
             )
             data = json.loads(resp_str)
             if isinstance(data, dict):
@@ -253,8 +348,7 @@ async def ai_edit_draft(
 
         # Description
         if (is_all or "description" in mod_fields or "summary" in mod_fields) and data.get("description"):
-            desc = str(data["description"]).strip()
-            desc = re.sub(r"This draft was created without AI[^\.]*\.?", "", desc, flags=re.IGNORECASE).strip()
+            desc = _sanitize_description(str(data["description"]))
             updated.description = desc
 
         # Potential reward
@@ -364,8 +458,7 @@ async def ai_generate_initial_draft(
     if isinstance(data, dict):
         title = str(data.get("title") or name).strip()
         cat = str(data.get("category") or category).strip().upper()
-        desc = str(data.get("description") or "").strip()
-        desc = re.sub(r"This draft was created without AI[^\.]*\.?", "", desc, flags=re.IGNORECASE).strip()
+        desc = _sanitize_description(str(data.get("description") or ""))
 
         raw_tasks = data.get("tasks") or []
         sanitized_tasks = [sanitize_task(str(t)) for t in raw_tasks if str(t).strip()]
