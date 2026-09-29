@@ -287,53 +287,87 @@ def _build_engaging_description(name: str, raw_text: str, chain: str | None, cat
     return f"{p1}\n\n{p2}"
 
 
-def _x_post(name: str, category: str, project_url: str | None, reward: str, chain: str | None, tasks: list[str]) -> str:
-    """Construct an engaging Twitter/X post strictly <= 280 characters with hook, bullets, and link."""
+def _x_post(
+    name: str,
+    category: str,
+    project_url: str | None,
+    reward: str,
+    chain: str | None,
+    tasks_or_desc: list[str] | str | None = None,
+    description: str | None = None,
+) -> str:
+    """Construct an engaging Twitter/X post strictly <= 280 characters with 1-2 sentence description and zero ellipsis/chops."""
     clean_name = _clean_project_name(name)
     eco = f" #{chain}" if chain else ""
     link_str = f" {project_url}" if project_url else ""
 
-    t1 = tasks[0] if tasks else "Connect wallet & complete tasks"
-    t1 = re.sub(r"https?://\S+", "", t1).strip(" .:,")
-    if len(t1) > 38:
-        t1 = t1[:36].rsplit(" ", 1)[0] + "…"
+    actual_desc = description
+    if not actual_desc and isinstance(tasks_or_desc, str):
+        actual_desc = tasks_or_desc
 
-    t2 = tasks[1] if len(tasks) > 1 else "Accumulate early allocation"
-    t2 = re.sub(r"https?://\S+", "", t2).strip(" .:,")
-    if len(t2) > 38:
-        t2 = t2[:36].rsplit(" ", 1)[0] + "…"
+    # Clean description into 1-2 complete sentences
+    clean_sentences: list[str] = []
+    if actual_desc:
+        clean = _plain_text(actual_desc)
+        clean = re.sub(r"https?://\S+", "", clean)
+        clean = _deduplicate_phrases(clean)
+        # Strip known boilerplate
+        clean = re.sub(r"This draft was created without AI[^\.]*\.?", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"The source reports:\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"appears to have a new[^\.]*\.?", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\s+", " ", clean).strip()
 
-    reward_clean = reward.replace("Token Allocation & Airdrop Rewards", "Allocation").replace("Early Community & Ecosystem Allocation", "Early Allocation")
-    if len(reward_clean) > 32:
-        reward_clean = reward_clean[:30].rsplit(" ", 1)[0] + "…"
+        raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean) if len(s.strip()) > 15]
+        for s in raw_sentences:
+            s_clean = s.rstrip(" .:,;…").strip()
+            # Remove any ellipsis or multiple periods inside sentence
+            s_clean = re.sub(r"\.{2,}|…", "", s_clean).strip()
+            if s_clean and not any(bp in s_clean.lower() for bp in ("without ai", "source reports", "confirm all details", "verify the domain", "never share a seed")):
+                clean_sentences.append(s_clean + ".")
 
-    # Standard high-converting structure
-    tweet = (
-        f"🪂 {clean_name} Airdrop is live{eco}!\n\n"
-        f"💰 {reward_clean}\n\n"
-        f"1⃣ {t1}\n"
-        f"2⃣ {t2}\n\n"
-        f"🔗 Farm here:{link_str}\n#airdrop #crypto"
-    )
+    cat_label = category.title() if category else "Airdrop"
+    cat_lower = category.lower() if category else "airdrop"
 
-    if len(tweet) <= 280:
-        return tweet
+    # Default fallback sentences if no description available
+    if not clean_sentences:
+        clean_sentences = [
+            f"{clean_name} has launched early participation mechanics{eco} for community supporters.",
+            f"Interact with protocol features to qualify for upcoming {cat_lower} rewards.",
+        ]
 
-    # Compact format if link is long
-    compact = (
-        f"🪂 {clean_name} Airdrop live{eco}!\n\n"
-        f"💰 {reward_clean}\n"
-        f"• {t1}\n"
-        f"• {t2}\n\n"
-        f"🔗 Join:{link_str} #airdrop"
-    )
-    if len(compact) <= 280:
-        return compact
+    # Hook line
+    if category.upper() == "TESTNET":
+        hook = f"🪂 {clean_name} Testnet is live{eco}!"
+    else:
+        hook = f"🪂 {clean_name} {cat_label} is live{eco}!" if "airdrop" not in clean_name.lower() else f"🪂 {clean_name} is live{eco}!"
 
-    # Ultra-compact fallback
-    available = 280 - len(link_str) - 20
-    head = f"🪂 {clean_name} Airdrop live{eco}! 💰 {reward_clean}"[:available]
-    return f"{head}\n🔗{link_str} #airdrop"
+    # Link & hashtag line
+    if project_url:
+        link_block = f"🔗 Farm here:{link_str}\n#airdrop #crypto"
+    else:
+        link_block = "🔗 Details in bio\n#airdrop #crypto"
+
+    # Option 1: Hook + 2 complete sentences + Link block
+    if len(clean_sentences) >= 2:
+        two_sentences = f"{clean_sentences[0]} {clean_sentences[1]}"
+        tweet_opt1 = f"{hook}\n\n{two_sentences}\n\n{link_block}"
+        if len(tweet_opt1) <= 280 and not any(el in tweet_opt1 for el in ("...", "…")):
+            return tweet_opt1
+
+    # Option 2: Hook + 1 complete sentence + Link block
+    one_sentence = clean_sentences[0]
+    tweet_opt2 = f"{hook}\n\n{one_sentence}\n\n{link_block}"
+    if len(tweet_opt2) <= 280 and not any(el in tweet_opt2 for el in ("...", "…")):
+        return tweet_opt2
+
+    # Option 3: Shortened crisp sentence if original was extra long
+    short_sentence = f"{clean_name} has opened early access{eco}. Complete tasks to qualify."
+    tweet_opt3 = f"{hook}\n\n{short_sentence}\n\n{link_block}"
+    if len(tweet_opt3) <= 280:
+        return tweet_opt3
+
+    # Option 4: Ultra-compact without ellipsis
+    return f"🪂 {clean_name} live{eco}!\n\n{short_sentence}\n\n🔗{link_str} #airdrop"
 
 
 def fallback_generate_draft(
@@ -348,7 +382,7 @@ def fallback_generate_draft(
     tasks = _extract_dynamic_tasks(name, raw_text, category, project_url)
     instructions = "\n".join(f"{idx}. {t.rstrip('.') + '.'}" for idx, t in enumerate(tasks, start=1))
     reward = _extract_reward_info(raw_text)
-    tw_text = _x_post(name, category, project_url, reward, chain, tasks)
+    tw_text = _x_post(name, category, project_url, reward, chain, summary, description=summary)
     ecosystem = f" in the {chain} ecosystem" if chain else ""
 
     return DraftResult(

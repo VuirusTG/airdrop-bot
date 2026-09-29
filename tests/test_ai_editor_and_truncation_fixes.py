@@ -972,6 +972,122 @@ class TestAIEditorAndTruncationFixes(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("🚀 🔥", rendered)
         self.assertTrue(rendered.startswith("🔥 Savior of Health"))
 
+    def test_twitter_draft_has_1_to_2_sentence_description_and_zero_ellipses(self):
+        """Verify that _x_post includes 1-2 complete sentences describing project, zero ellipsis or chopped text, and strictly <= 280 chars."""
+        from services.fallback_content import _x_post
+        name = "FX100"
+        summary = (
+            "FX100 has launched its testnet campaign on Ethereum, introducing high-speed on-chain perpetual mechanics. "
+            "Active participants can interact with protocol features, complete early milestones, and qualify for upcoming community allocations."
+        )
+        url = "https://fx100.org"
+        tw = _x_post(
+            name=name,
+            category="TESTNET",
+            project_url=url,
+            reward="Community & Ecosystem Allocation",
+            chain="Ethereum",
+            description=summary,
+        )
+        self.assertLessEqual(len(tw), 280)
+        self.assertNotIn("...", tw)
+        self.assertNotIn("…", tw)
+        self.assertNotIn("1⃣", tw)
+        self.assertNotIn("2⃣", tw)
+        self.assertIn("FX100", tw)
+        self.assertIn("https://fx100.org", tw)
+        self.assertIn("Ethereum", tw)
+        # Verify 1-2 sentences of description
+        self.assertTrue("FX100 has launched" in tw or "FX100 is" in tw or "early" in tw)
+
+    async def test_review_caption_never_drops_twitter_draft_even_when_long(self):
+        """Verify that _review_caption NEVER drops Twitter draft, even when caption exceeds 1024 chars."""
+        from bot.handlers.admin_review import _review_caption
+        project = Project(
+            id=109,
+            name="FX100 Protocol",
+            category="airdrop",
+            chain="Ethereum",
+            source_url="https://airdropalert.com/fx100-protocol-airdrop-everything-you-need-to-know-about-fx100-testnet-and-rewards-campaign/",
+            project_url="https://fx100.org/app/campaign/early-access-testnet-milestones-and-rewards",
+            legitimacy_score=8.5,
+        )
+        # Create a large Telegram body that pushes full text over 1024 characters
+        long_summary = (
+            "FX100 Protocol is a next-generation decentralized perpetual contract trading exchange built on Ethereum. "
+            "The platform leverages zero-knowledge rollups to provide institutional-level execution speed, deep orderbook liquidity, and non-custodial asset settlement for active DeFi traders across global crypto markets."
+        )
+        instructions = (
+            "1. Connect your Web3 compatible wallet to the official FX100 platform.\n"
+            "2. Claim testnet ETH and test protocol USDC from the verified faucet.\n"
+            "3. Place at least 5 perpetual trades with leverage to generate active volume.\n"
+            "4. Provide liquidity into the multi-asset pool to earn protocol yield points."
+        )
+        tw_text = (
+            "🪂 FX100 Protocol is live on #Ethereum!\n\n"
+            "FX100 is a decentralized perpetual exchange with deep orderbook liquidity. Test early features to qualify for community rewards.\n\n"
+            "🔗 Farm here: https://fx100.org\n#airdrop #crypto"
+        )
+        draft = Draft(
+            project_id=109,
+            title="🔥 FX100 Protocol: Airdrop Opportunity",
+            summary=long_summary,
+            instructions=instructions,
+            potential_reward="Community & Ecosystem Allocation",
+            risk_note=None,
+            twitter_text=tw_text,
+            project_url=project.project_url,
+            source_url=project.source_url,
+        )
+
+        caption = _review_caption(project, draft, 1, 1)
+        self.assertLessEqual(len(caption), 1024)
+        # Twitter section MUST be present!
+        self.assertTrue("Черновик для твиттера" in caption or "Twitter (X):" in caption)
+        self.assertIn("🪂 FX100", caption)
+        self.assertNotIn("...", caption[-50:])  # Twitter itself not cut off at the bottom
+
+    async def test_ensure_upgraded_draft_fixes_legacy_truncated_twitter(self):
+        """Verify that _ensure_upgraded_draft detects and upgrades drafts with truncated Twitter text."""
+        from bot.handlers.admin_review import _ensure_upgraded_draft
+        async with self.session_factory() as session:
+            project = Project(
+                id=110,
+                dedup_hash="fx100_dedup_hash_110",
+                name="FX100",
+                category="testnet",
+                chain="Ethereum",
+                source="telegram",
+                project_url="https://fx100.org",
+                source_url="https://source.com/fx100",
+            )
+            session.add(project)
+            await session.flush()
+
+            # Draft with legacy chopped Twitter text with ellipsis
+            draft = Draft(
+                project_id=project.id,
+                title="FX100 Testnet",
+                summary="FX100 is a perpetual DEX on Ethereum with early incentives.",
+                instructions="1. Connect wallet.\n2. Trade on testnet.",
+                potential_reward="Ecosystem Allocation",
+                risk_note=None,
+                twitter_text="🪂 FX100 is live!\n1⃣ Claim testnet tokens from the...\n2⃣ Execute smart contract...",
+                project_url="https://fx100.org",
+                source_url="https://source.com/fx100",
+            )
+            session.add(draft)
+            await session.commit()
+
+            # Run upgrade
+            upgraded = await _ensure_upgraded_draft(session, project, draft)
+            self.assertIsNotNone(upgraded.twitter_text)
+            self.assertNotIn("...", upgraded.twitter_text)
+            self.assertNotIn("…", upgraded.twitter_text)
+            self.assertNotIn("1⃣", upgraded.twitter_text)
+            self.assertIn("FX100", upgraded.twitter_text)
+            self.assertIn("https://fx100.org", upgraded.twitter_text)
+
 
 if __name__ == "__main__":
     unittest.main()

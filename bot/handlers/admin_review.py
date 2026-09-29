@@ -140,15 +140,25 @@ def _review_caption(project: Project, draft: Draft, position: int, total: int) -
     source = draft.source_url or project.source_url or "Источник не указан"
     project_url = draft.project_url or project.project_url or "⚠️ Не найдена — публикация заблокирована"
 
-    # Twitter draft formatted strictly <= 280 chars for free Twitter accounts
-    tw_section = ""
-    tw_text = ""
-    if draft.twitter_text:
-        tw_text = draft.twitter_text.strip()
-        if len(tw_text) > 280:
-            tw_text = tw_text[:279].rsplit(" ", 1)[0] + "…"
-        tw_section = f"\n\n2. Черновик для твиттера\n\n{tw_text}"
+    # Twitter draft formatted strictly <= 280 chars without ellipses or cutoffs
+    tw_text = (draft.twitter_text or "").strip()
+    if not tw_text:
+        from services.fallback_content import _x_post
+        tw_text = _x_post(
+            name=project.name,
+            category=project.category or "airdrop",
+            project_url=draft.project_url or project.project_url,
+            reward=draft.potential_reward or "Allocation",
+            chain=project.chain,
+            description=draft.summary,
+        )
+        draft.twitter_text = tw_text
 
+    tw_text = re.sub(r"\.{2,}|…", "", tw_text).strip()
+    if len(tw_text) > 280:
+        tw_text = tw_text[:279].rsplit(" ", 1)[0].rstrip(" .:,;…")
+
+    tw_section = f"\n\n2. Черновик для твиттера\n\n{tw_text}"
     tg_header = "1. Черновик для телеграмм канала"
     tg_body = draft.rendered_text()
 
@@ -169,32 +179,36 @@ def _review_caption(project: Project, draft: Draft, position: int, total: int) -
         return compact_with_tw
 
     # Priority 2: Minimal headers so both Telegram & Twitter fit
-    if tw_text:
-        minimal_with_tw = f"{header}\n🔗 {project_url}\n\n1. Telegram:\n{tg_body}\n\n2. Twitter (X):\n{tw_text}"
-        if len(minimal_with_tw) <= 1024:
-            return minimal_with_tw
+    minimal_meta = f"{header}\n🔗 {project_url}"
+    minimal_with_tw = f"{minimal_meta}\n\n1. Telegram:\n{tg_body}\n\n2. Twitter (X):\n{tw_text}"
+    if len(minimal_with_tw) <= 1024:
+        return minimal_with_tw
 
-    # Priority 3: If Telegram body alone is long, prioritize full Telegram post + compact meta
-    compact_tg_only = f"{compact_meta}\n\n{tg_header}\n\n{tg_body}"
-    if len(compact_tg_only) <= 1024:
-        return compact_tg_only
+    # Priority 3: Compact spacing in tg_body (collapse excess newlines)
+    tg_body_compact = re.sub(r"\n{3,}", "\n\n", tg_body).strip()
+    tight_with_tw = f"{minimal_meta}\n\n1. Telegram:\n{tg_body_compact}\n\n2. Twitter (X):\n{tw_text}"
+    if len(tight_with_tw) <= 1024:
+        return tight_with_tw
 
-    # Priority 4: Minimal header + Telegram post
-    minimal_tg = f"{header}\n\n{tg_body}"
-    if len(minimal_tg) <= 1024:
-        return minimal_tg
+    # Priority 4: Trim Telegram body to guarantee BOTH Telegram and Twitter drafts are shown (NEVER drop Twitter!)
+    overhead = f"{minimal_meta}\n\n1. Telegram:\n\n\n2. Twitter (X):\n{tw_text}"
+    avail_tg = 1024 - len(overhead) - 4
+    if avail_tg > 80:
+        truncated_tg = tg_body_compact[:avail_tg].rsplit("\n", 1)[0]
+        return f"{minimal_meta}\n\n1. Telegram:\n{truncated_tg}\n\n2. Twitter (X):\n{tw_text}"
 
-    # Priority 5: Full Telegram body directly
-    if len(tg_body) <= 1024:
-        return tg_body
-
-    return tg_body[:1020].rsplit("\n", 1)[0]
+    # Priority 5: Fallback preserving Twitter draft
+    return f"{minimal_meta}\n\n2. Twitter (X):\n{tw_text}"
 
 
 async def _ensure_upgraded_draft(session: AsyncSession, project: Project, draft: Draft) -> Draft:
-    """If draft has legacy fallback markers (without AI, robotic tasks, no-reward contradiction), upgrade it on the fly."""
+    """If draft has legacy fallback markers (without AI, robotic tasks, no-reward contradiction, missing/broken twitter), upgrade it on the fly."""
     is_legacy = (
         draft.risk_note is not None
+        or not draft.twitter_text
+        or "..." in (draft.twitter_text or "")
+        or "…" in (draft.twitter_text or "")
+        or "1⃣" in (draft.twitter_text or "")
         or (draft.summary and any(m in draft.summary.lower() for m in ("without ai", "the source reports:", "appears to have a new")))
         or (draft.instructions and any(m in draft.instructions.lower() for m in ("open the official project page using the link below", "verify that the campaign is active")))
         or (draft.instructions and "http" in draft.instructions.lower())
@@ -228,6 +242,19 @@ async def _ensure_upgraded_draft(session: AsyncSession, project: Project, draft:
             content.risk_note = None
             sync_content_to_draft(content, draft)
             draft.rework_feedback = f"Auto-upgraded via {prov}"
+
+            # Ensure twitter_text is clean and non-empty
+            if not draft.twitter_text or "..." in draft.twitter_text or "…" in draft.twitter_text or "1⃣" in draft.twitter_text:
+                from services.fallback_content import _x_post
+                draft.twitter_text = _x_post(
+                    name=project.name,
+                    category=project.category or "airdrop",
+                    project_url=draft.project_url or project.project_url,
+                    reward=draft.potential_reward or "Allocation",
+                    chain=project.chain,
+                    description=draft.summary,
+                )
+
             try:
                 await ensure_draft_image(project, draft)
             except Exception as exc:
@@ -250,6 +277,19 @@ async def _ensure_upgraded_draft(session: AsyncSession, project: Project, draft:
     content = draft_to_content(res, project)
     content.risk_note = None
     sync_content_to_draft(content, draft)
+
+    # Ensure twitter_text is clean and non-empty
+    if not draft.twitter_text or "..." in draft.twitter_text or "…" in draft.twitter_text or "1⃣" in draft.twitter_text:
+        from services.fallback_content import _x_post
+        draft.twitter_text = _x_post(
+            name=project.name,
+            category=project.category or "airdrop",
+            project_url=draft.project_url or project.project_url,
+            reward=draft.potential_reward or "Allocation",
+            chain=project.chain,
+            description=draft.summary,
+        )
+
     try:
         await ensure_draft_image(project, draft)
     except Exception as exc:
@@ -349,6 +389,16 @@ async def _replace_review_message(
         project.review_message_id = sent.message_id
         await session.commit()
 
+        if draft.twitter_text and draft.twitter_text.strip() not in caption:
+            try:
+                await callback.bot.send_message(
+                    chat_id=callback.message.chat.id,
+                    text=f"🐦 <b>2. Черновик для Twitter (X):</b>\n\n{draft.twitter_text.strip()}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
 
 async def _show_review_project(callback: CallbackQuery, project_id: int) -> bool:
     """Replace the current review card with another pending project."""
@@ -414,6 +464,15 @@ async def _open_review_queue(message: Message) -> None:
         project.review_chat_id = sent.chat.id
         project.review_message_id = sent.message_id
         await session.commit()
+
+        if draft.twitter_text and draft.twitter_text.strip() not in caption:
+            try:
+                await message.answer(
+                    f"🐦 <b>2. Черновик для Twitter (X):</b>\n\n{draft.twitter_text.strip()}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
 
 
 @router.message(Command("start"))
@@ -580,8 +639,9 @@ async def on_approve(callback: CallbackQuery):
     if telegram_success:
         if twitter_text and callback.message:
             tw_text = twitter_text.strip()
+            tw_text = re.sub(r"\.{2,}|…", "", tw_text).strip()
             if len(tw_text) > 280:
-                tw_text = tw_text[:279].rsplit(" ", 1)[0] + "…"
+                tw_text = tw_text[:279].rsplit(" ", 1)[0].rstrip(" .:,;…")
             tw_keyboard = open_in_x_keyboard(tw_text)
             tw_caption = (
                 "🐦 <b>Пост опубликован в Telegram!</b>\n\n"

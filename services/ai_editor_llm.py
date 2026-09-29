@@ -88,9 +88,10 @@ CRITICAL TELEGRAM CHANNEL STYLE GUIDELINES (Inspired by top alpha channels like 
 TWITTER / X REQUIREMENTS:
 - Ready-to-post tweet, STRICTLY <= 280 characters in English with high-converting structure:
   * Line 1: Hook with emoji (e.g., "🪂 [Project] Airdrop is live on #[Chain]!")
-  * Line 2: Value & reward (e.g., "💰 [Reward] confirmed ahead of TGE.")
-  * Line 3: 2 bullet tasks (e.g., "1⃣ Complete daily check-in\\n2⃣ Mint soulbound NFT")
-  * Line 4: Verified project URL + #airdrop #crypto
+  * Line 2: Clear, informative 1-2 sentence description of what the project is and the reward opportunity.
+  * Line 3: Verified project URL + #airdrop #crypto (e.g., "🔗 Farm here: [URL]\n#airdrop #crypto")
+  * CRITICAL: NEVER cut off or truncate sentences with "..." or "…"! Every sentence must be complete and grammatically whole.
+  * Do NOT include chopped bullet lists in the tweet.
   * Total length MUST be <= 280 characters.
 
 IMAGE METADATA:
@@ -114,7 +115,7 @@ Output:
   ],
   "potential_reward": "Heal Points & Soulbound NFT Airdrop",
   "network": "BNB Chain",
-  "twitter_text": "🪂 Savior of Health Airdrop is live on #BNBChain!\\n\\n💰 Heal Points & NFTs\\n\\n1⃣ Complete daily wellness check-ins\\n2⃣ Mint soulbound NFT\\n\\n🔗 Farm here: https://saviorofhealth.app/ #airdrop #crypto",
+  "twitter_text": "🪂 Savior of Health Airdrop is live on #BNBChain!\n\nSavior of Health is a Web3 wellness platform where users earn Heal Points and soulbound NFTs by completing daily check-ins.\n\n🔗 Farm here: https://saviorofhealth.app/ #airdrop #crypto",
   "theme_color": "lime",
   "image_prompt": "Futuristic bio-digital cyber wellness interface with glowing green vital telemetry and sleek dark glass"
 }
@@ -134,7 +135,7 @@ Output:
   ],
   "potential_reward": "30M $LIT Token Pool",
   "network": "Arbitrum",
-  "twitter_text": "🪂 Lighter DEX Testnet is live on #Arbitrum!\\n\\n💰 30M $LIT Token Pool\\n\\n1⃣ Connect wallet to testnet\\n2⃣ Execute trades on orderbook\\n\\n🔗 Join here: https://lighter.xyz #airdrop #DeFi",
+  "twitter_text": "🪂 Lighter DEX Testnet is live on #Arbitrum!\n\nLighter is an institutional orderbook DEX offering a confirmed 30M $LIT token pool for active testnet traders.\n\n🔗 Join here: https://lighter.xyz #airdrop #DeFi",
   "theme_color": "cyan",
   "image_prompt": "High-frequency cyber financial exchange holographic chart displays in electric cyan and deep indigo"
 }
@@ -183,11 +184,11 @@ EXAMPLES OF USER INTENT:
    - `explanation`: "Текст описания сокращен до 1-2 емких предложений без лишней воды"
 
 3. "перепиши твит" or "сделай твит бодрее":
-   - Rewrite `twitter_text` (strictly <= 280 chars, strong hook, includes project link).
+   - Rewrite `twitter_text` (strictly <= 280 chars, catchy hook, 1-2 complete sentences describing project & reward opportunity, verified link, zero "..." cutoffs).
    - Keep all other fields untouched.
    - `modified_fields`: ["twitter_text"]
    - Set `image_operation` to "none".
-   - `explanation`: "Обновлен текст для Twitter"
+   - `explanation`: "Обновлен текст для Twitter с лаконичным описанием проекта без обрезков"
 
 4. "удали 2 пункт и добавь: Сделай депозит от 20 USDC":
    - Modify the `tasks` array accordingly.
@@ -206,7 +207,7 @@ EXAMPLES OF USER INTENT:
    - Set `image_operation` to "new_artwork".
    - Set `art_prompt` to English prompt for background art.
    - `modified_fields`: ["image_operation", "art_prompt"]
-   - `explanation`: "Запрошена генерация нового фона карточки"
+   - Set `explanation`: "Запрошена генерация нового фона карточки"
 
 7. "убери раздел Risk с поста для телеграмма" or "удали риск":
    - Set `risk_note` to null.
@@ -218,7 +219,7 @@ EXAMPLES OF USER INTENT:
 RULES:
 - Maintain factual integrity: do not invent false URLs or seed phrase requests.
 - Tasks: max 4 steps, <= 65 chars each, no ellipsis ("..."), clear actionable verbs in English.
-- Twitter: <= 280 characters in English.
+- Twitter: <= 280 characters in English, includes 1-2 complete sentences describing project, NO ellipsis ("..." / "…") or truncated sentences.
 - ALL public-facing text (title, description, tasks, potential reward, twitter_text) MUST be in natural, fluent English.
 
 Respond ONLY with valid JSON:
@@ -366,7 +367,10 @@ async def ai_edit_draft(
         # Twitter text
         if (is_all or "twitter_text" in mod_fields or "twitter" in mod_fields or "tweet" in mod_fields) and data.get("twitter_text"):
             tw = str(data["twitter_text"]).strip()
-            if len(tw) <= 300:
+            tw = re.sub(r"\.{2,}|…", "", tw).strip()
+            if len(tw) > 280:
+                tw = tw[:279].rsplit(" ", 1)[0].rstrip(" .:,;…")
+            if tw:
                 updated.twitter_text = tw
 
         # Risk note
@@ -471,8 +475,20 @@ async def ai_generate_initial_draft(
         potential_reward = str(data.get("potential_reward") or "").strip() or None
         network = str(data.get("network") or chain or "").strip() or None
         twitter_text = str(data.get("twitter_text") or "").strip() or None
-        if twitter_text and len(twitter_text) > 280:
-            twitter_text = twitter_text[:279].rsplit(" ", 1)[0] + "…"
+        if twitter_text:
+            twitter_text = re.sub(r"\.{2,}|…", "", twitter_text).strip()
+            if len(twitter_text) > 280:
+                twitter_text = twitter_text[:279].rsplit(" ", 1)[0].rstrip(" .:,;…")
+        if not twitter_text:
+            from services.fallback_content import _x_post
+            twitter_text = _x_post(
+                name=title,
+                category=cat,
+                project_url=project_url,
+                reward=potential_reward or "Allocation",
+                chain=network,
+                description=desc,
+            )
 
         theme_color = str(data.get("theme_color") or "lime").lower().strip()
         if theme_color not in {"lime", "cyan", "violet", "gold", "red", "orange"}:
