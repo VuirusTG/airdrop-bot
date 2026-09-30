@@ -300,10 +300,15 @@ async def process_raw_signal(
 
 
 def _review_caption(project: Project, draft: Draft) -> str:
+    import re
     score = f"{project.legitimacy_score:.1f}/10" if project.legitimacy_score is not None else "n/a"
+    clean_title = (draft.title or "").strip()
+    has_leading_emoji = bool(re.match(r"^[\U00010000-\U0010ffff\u2600-\u27bf\u2300-\u23ff]", clean_title))
+    title_line = clean_title if has_leading_emoji else f"🚀 {clean_title}"
+
     lines = [
         f"🔎 REVIEW • #{project.id} • {score}",
-        f"🚀 {draft.title}",
+        title_line,
         "",
         draft.summary.strip(),
         "",
@@ -315,9 +320,19 @@ def _review_caption(project: Project, draft: Draft) -> str:
     if draft.project_url:
         lines += ["", f"🔗 {draft.project_url}"]
     if draft.twitter_text:
-        lines += ["", "🐦 Twitter (X):", draft.twitter_text.strip()]
+        tw = draft.twitter_text.strip()
+        tw = re.sub(r"\.{2,}|…", "", tw).strip()
+        lines += ["", "🐦 Twitter (X):", tw]
+
     text = "\n".join(lines).strip()
-    return text if len(text) <= 1024 else text[:1019].rsplit(" ", 1)[0] + "…"
+    if len(text) <= 1024:
+        return text
+
+    compact_text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(compact_text) <= 1024:
+        return compact_text
+
+    return compact_text[:1020].rsplit("\n", 1)[0]
 
 
 def _review_text(project: Project, draft: Draft) -> str:
