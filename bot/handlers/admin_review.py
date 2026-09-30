@@ -203,6 +203,39 @@ def _review_caption(project: Project, draft: Draft, position: int, total: int) -
 
 async def _ensure_upgraded_draft(session: AsyncSession, project: Project, draft: Draft) -> Draft:
     """If draft has legacy fallback markers (without AI, robotic tasks, no-reward contradiction, missing/broken twitter), upgrade it on the fly."""
+    if draft.content_json:
+        try:
+            content = DraftContent.from_json(draft.content_json)
+            # Structured Editor V2 draft: preserve content and ensure clean risk_note & twitter_text
+            changed = False
+            if draft.risk_note is not None:
+                draft.risk_note = None
+                content.risk_note = None
+                changed = True
+            if not draft.twitter_text or "..." in draft.twitter_text or "…" in draft.twitter_text or "1⃣" in draft.twitter_text:
+                from services.fallback_content import _x_post
+                draft.twitter_text = _x_post(
+                    name=project.name,
+                    category=content.category or project.category or "airdrop",
+                    project_url=content.project_link or draft.project_url or project.project_url,
+                    reward=content.potential_reward or draft.potential_reward or "Allocation",
+                    chain=content.network or project.chain,
+                    description=content.description or draft.summary,
+                )
+                content.twitter_text = draft.twitter_text
+                changed = True
+            if changed:
+                draft.content_json = content.to_json()
+            if not draft.image_path:
+                try:
+                    await ensure_draft_image(project, draft)
+                except Exception:
+                    pass
+            await session.commit()
+            return draft
+        except Exception as exc:
+            logger.warning("Error inspecting content_json in _ensure_upgraded_draft: %s", exc)
+
     is_legacy = (
         draft.risk_note is not None
         or not draft.twitter_text

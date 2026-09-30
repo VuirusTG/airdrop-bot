@@ -105,6 +105,9 @@ class VersionManager:
         # Restore previous content
         restored_content = DraftContent.from_json(prev_snap.content_json)
         sync_content_to_draft(restored_content, draft)
+        draft.version = prev_snap.version
+        draft.edit_plan_json = prev_snap.edit_plan_json
+        draft.rework_feedback = prev_snap.user_command
 
         # Rerender social card if needed
         card = await render_social_card_from_content(restored_content)

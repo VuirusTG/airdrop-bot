@@ -40,6 +40,7 @@ SUPPORTED_TARGETS = {
     "telegram",
     "artwork",
     "image_background",
+    "card_background",
     "character",
     "layout",
     "full_draft",
@@ -315,6 +316,37 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             explanation="Добавление новой задачи",
         )
 
+    # 5b. Shorten / simplify tasks list: "Сделай список задач короче", "Сократи задачи", "Сделай шаги короче", "Укороти список задач"
+    m_shorten_tasks = (
+        re.search(
+            r"(?:сократи|укороти|упрости|shorten)\s+(?:список\s+)?(?:задач\w*|шаг\w*|task\w*|инструкц\w*)",
+            cmd,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"сделай\s+(?:список\s+)?(?:задач\w*|шаг\w*|task\w*|инструкц\w*)\s+(?:короче|лаконичнее|проще|покороче|крат\w*)",
+            cmd,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"(?:список\s+)?(?:задач\w*|шаг\w*|task\w*|инструкц\w*)\s+(?:сделай\s+)?(?:короче|лаконичнее|проще|покороче|крат\w*)",
+            cmd,
+            re.IGNORECASE,
+        )
+    )
+    if m_shorten_tasks and not re.search(r"пост\b|черновик|описан|summary|description|заголов", cmd, re.IGNORECASE):
+        return EditPlan(
+            target="tasks",
+            operation="shorten",
+            old_value=current.tasks,
+            new_value="shorten",
+            confidence=0.98,
+            requires_confirmation=False,
+            affected_components=["draft_data", "telegram_post", "social_card"],
+            image_operation="rerender_text",
+            explanation="Сокращение списка задач",
+        )
+
     # 6. Change title: "Измени заголовок на: Base Airdrop Season 2" / "Поменяй заголовок на фото на ..."
     m_title = re.search(
         r"(?:измени|поменяй|смени|set|change)\s+(?:(?:на\s+)?(?:фото|картинке|карточке)\s+)?(?:заголовок|название|title)(?:\s+(?:на\s+)?(?:фото|картинке|карточке))?\s*на\s*[:\s]*(.+)",
@@ -545,6 +577,94 @@ async def compress_or_correct_tasks(
     return [sanitize_task(t) for t in invalid_tasks]
 
 
+def deterministic_shorten_task(task: str) -> str:
+    """Deterministically compress a single task without inventing fake information or ellipsis."""
+    t = sanitize_task(task)
+    # Remove verbose leading preambles
+    t = re.sub(
+        r"^(?:make sure to|be sure to|remember to|you need to|you must|please|connect your wallet and|open the portal and|visit the website and)\s+",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    ).strip()
+    # Remove trailing explanatory clauses and filler
+    t = re.sub(
+        r"\s+(?:using the official (?:bridge|website|portal|dapp)[^\.]*|in order to (?:qualify|earn|receive)[^\.]*|to (?:qualify|earn|receive|maximize|participate|be eligible)[^\.]*|to get eligible[^\.]*|across all supported chains|on the testnet|on the mainnet|for free).*$",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    ).strip()
+    # If still long (> 65 chars), split at conjunctions / semicolons
+    if len(t) > 65:
+        split_m = re.split(r"(?:,\s*and\s+|\s+and\s+then\s+|\s*;\s*|\s*,\s*)", t)
+        if split_m and len(split_m[0]) >= 15:
+            t = split_m[0].strip()
+    t = re.sub(r"\.{2,}|…", "", t)
+    t = re.sub(r"\b(?:etc\.?|and more|and so on)\b", "", t, flags=re.IGNORECASE).strip()
+    return sanitize_task(t)
+
+
+async def shorten_tasks_list(tasks: list[str]) -> list[str]:
+    """Shorten tasks while strictly preserving factual actions and passing all validators."""
+    if not tasks:
+        return []
+
+    # Try LLM if configured
+    if settings.OPENROUTER_API_KEY or settings.GROQ_API_KEY or settings.GEMINI_API_KEY:
+        try:
+            prompt = (
+                "Shorten the following list of crypto qualification tasks. Make each task an ultra-concise action verb statement (max 60-80 chars).\n"
+                "CRITICAL RULES:\n"
+                "- PRESERVE EXACT factual actions (bridge, swap, mint, claim, stake).\n"
+                "- NEVER invent new fictional steps.\n"
+                "- NO ellipsis ('...' or '…').\n"
+                "- NO filler phrases ('etc.', 'and more').\n"
+                "- NO numbering or bullets.\n\n"
+                "TASKS:\n" + "\n".join(f"- {t}" for t in tasks) + "\n\n"
+                "Return ONLY a JSON list of shortened strings, e.g. [\"Action 1\", \"Action 2\"]:"
+            )
+            llm_res = None
+            if settings.OPENROUTER_API_KEY:
+                from services.openrouter_client import generate_json as openrouter_json
+                raw = await openrouter_json(
+                    system_instruction="Return ONLY a JSON array of shortened tasks without ellipsis.",
+                    contents=prompt,
+                    model=settings.OPENROUTER_MODEL,
+                    temperature=0.1,
+                )
+                llm_res = json.loads(raw)
+            elif settings.GROQ_API_KEY:
+                raw = await generate_json(
+                    system_instruction="Return ONLY a JSON array of shortened tasks without ellipsis.",
+                    contents=prompt,
+                    temperature=0.1,
+                )
+                llm_res = json.loads(raw)
+            elif settings.GEMINI_API_KEY:
+                resp = await generate_content(prompt=prompt, temperature=0.1)
+                text = (resp.text or "").strip()
+                if "```json" in text:
+                    text = text.split("```json")[1].split("```")[0].strip()
+                elif "```" in text:
+                    text = text.split("```")[1].split("```")[0].strip()
+                llm_res = json.loads(text)
+
+            if isinstance(llm_res, list) and len(llm_res) == len(tasks):
+                cleaned = [sanitize_task(str(x)) for x in llm_res if str(x).strip()]
+                v = validate_tasks(cleaned)
+                if v.is_valid:
+                    return cleaned
+        except Exception as exc:
+            logger.warning("LLM task shortening failed: %s; using deterministic fallback", exc)
+
+    # Deterministic fallback
+    shortened = [deterministic_shorten_task(t) for t in tasks]
+    v = validate_tasks(shortened)
+    if not v.is_valid:
+        shortened = [sanitize_task(t) for t in tasks]
+    return shortened
+
+
 REWRITE_DRAFT_SYSTEM_PROMPT = """You are an elite crypto researcher and Telegram post editor for an exclusive airdrop channel.
 Your goal is to rework and elevate a draft into a sharp, professional, compelling publication-ready post based on the current draft context and the user's instructions.
 
@@ -747,6 +867,9 @@ class EditorService:
                 sanitized = sanitize_task(str(new_val or ""))
                 if len(new_content.tasks) < 5:
                     new_content.tasks.append(sanitized)
+            elif op == "shorten" or (isinstance(new_val, str) and any(w in new_val.lower() for w in ["shorten", "короче", "сократ", "лаконичн"])):
+                shortened = await shorten_tasks_list(new_content.tasks)
+                new_content.tasks = shortened
             elif isinstance(new_val, list):
                 raw_list = [sanitize_task(str(x)) for x in new_val if str(x).strip()]
                 # Validate whole task list
