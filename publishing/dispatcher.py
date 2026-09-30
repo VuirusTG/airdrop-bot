@@ -37,8 +37,9 @@ def _telegram_photo_caption(draft: Draft) -> str:
     full_text = draft.rendered_text()
     if len(full_text) <= TELEGRAM_CAPTION_LIMIT:
         return full_text
-    # Safely fit within 1024 characters without appending dots
-    return full_text[:TELEGRAM_CAPTION_LIMIT].rstrip()
+    # Safely fit within 1024 characters without cutting mid-line or appending dots
+    chunk = full_text[:TELEGRAM_CAPTION_LIMIT]
+    return (chunk.rsplit("\n", 1)[0] if "\n" in chunk else chunk).rstrip()
 
 
 async def _publish_telegram(bot: Bot, project: Project, draft: Draft) -> PublishResult:

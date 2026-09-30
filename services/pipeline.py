@@ -343,4 +343,7 @@ def _review_text(project: Project, draft: Draft) -> str:
         f"Почему: {project.score_reasoning}\n\n"
     )
     text = header + draft.rendered_review_text()
-    return text if len(text) <= 4096 else text[:4090] + "\n..."
+    if len(text) <= 4096:
+        return text
+    chunk = text[:4096]
+    return (chunk.rsplit("\n", 1)[0] if "\n" in chunk else chunk).rstrip()
