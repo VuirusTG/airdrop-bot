@@ -212,6 +212,61 @@ def test_detect_theme_color_word_boundaries():
     assert detect_theme_color("Поставь цвет violet") == "violet"
 
 
+def test_create_edit_plan_llm_first_routing():
+    """Verify that when LLM key is present, create_edit_plan uses LLM JSON."""
+    from unittest.mock import AsyncMock, patch
+    from config import settings
+
+    draft = get_sample_draft()
+    mock_llm_plan_json = """{
+        "target": "project_title",
+        "operation": "replace",
+        "old_value": "Flop Network",
+        "new_value": "Wager Predict",
+        "confidence": 0.99,
+        "requires_confirmation": false,
+        "affected_components": ["draft_data", "telegram_post", "social_card"],
+        "image_operation": "rerender_text",
+        "explanation": "Изменение названия проекта на 'Wager Predict'"
+    }"""
+
+    loop = asyncio.new_event_loop()
+    try:
+        with patch.object(settings, "OPENROUTER_API_KEY", "mock_openrouter_key"):
+            with patch("services.openrouter_client.generate_json", new=AsyncMock(return_value=mock_llm_plan_json)):
+                plan = loop.run_until_complete(
+                    EditorService.create_edit_plan("Сделай название на фото 'Wager Predict'", draft)
+                )
+                assert plan.target == "project_title"
+                assert plan.new_value == "Wager Predict"
+                assert plan.image_operation == "rerender_text"
+                assert plan.confidence == 0.99
+    finally:
+        loop.close()
+
+
+def test_create_edit_plan_llm_failover_to_deterministic():
+    """Verify that when LLM fails, create_edit_plan falls back to deterministic parsing."""
+    from unittest.mock import AsyncMock, patch
+    from config import settings
+
+    draft = get_sample_draft()
+    loop = asyncio.new_event_loop()
+    try:
+        with patch.object(settings, "OPENROUTER_API_KEY", "mock_key"):
+            with patch("services.openrouter_client.generate_json", new=AsyncMock(side_effect=RuntimeError("OpenRouter timeout"))):
+                with patch.object(settings, "GROQ_API_KEY", None):
+                    with patch.object(settings, "GEMINI_API_KEY", None):
+                        plan = loop.run_until_complete(
+                            EditorService.create_edit_plan("Измени Potential Rewards с $2500+ на $1000+", draft)
+                        )
+                        assert plan.target == "potential_reward"
+                        assert plan.new_value == "$1000+"
+                        assert plan.image_operation == "rerender_text"
+    finally:
+        loop.close()
+
+
 if __name__ == "__main__":
     test_fast_parse_reward_change()
     test_fast_parse_replace_single_task()
@@ -222,4 +277,7 @@ if __name__ == "__main__":
     test_task_sanitizer()
     test_fast_parse_title_on_photo_variations()
     test_detect_theme_color_word_boundaries()
+    test_create_edit_plan_llm_first_routing()
+    test_create_edit_plan_llm_failover_to_deterministic()
     print("ALL EDITOR V2 & TASK VALIDATOR TESTS PASSED!")
+

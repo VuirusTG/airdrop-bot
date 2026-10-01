@@ -79,66 +79,92 @@ class EditPlan:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EditPlan:
         return cls(
-            target=data.get("target", "tasks"),
-            operation=data.get("operation", "replace"),
+            target=str(data.get("target", "full_draft")),
+            operation=str(data.get("operation", "replace")),
             old_value=data.get("old_value"),
             new_value=data.get("new_value"),
             confidence=float(data.get("confidence", 1.0)),
             requires_confirmation=bool(data.get("requires_confirmation", False)),
             affected_components=list(data.get("affected_components") or ["draft_data"]),
-            image_operation=data.get("image_operation", "rerender_text"),
-            explanation=data.get("explanation", ""),
+            image_operation=str(data.get("image_operation", "rerender_text")),
+            explanation=str(data.get("explanation", "")),
         )
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
 
 
-INTENT_PARSER_SYSTEM_PROMPT = """You are an ultra-precise Draft Editor Intent Parser for a crypto editorial application.
-Your job is to read the CURRENT draft data and the USER COMMAND, and output a strict JSON EditPlan.
+INTENT_PARSER_SYSTEM_PROMPT = """You are an ultra-precise Editorial Intent Analyzer & Planner for a crypto airdrop publication system.
+The user (channel editor/admin) gives feedback, remarks, questions, or revision commands in natural Russian or English.
+Your job is to deeply analyze the user's natural language, match it against the CURRENT draft state, and output a strict JSON EditPlan specifying exactly what component to edit and how.
 
-RULES:
-1. Identify the EXACT target being edited:
-   - "project_title" (title)
-   - "description" (summary / description text)
-   - "category" (AIRDROP, TESTNET, QUEST, etc.)
-   - "potential_reward" (reward amount or status)
-   - "network" (chain name: Base, Arbitrum, Solana, etc.)
-   - "risk_note" (risk disclaimer, warning section; operation can be "remove" to delete it or "replace" to update it)
-   - "project_link" (URL to project)
-   - "tasks" (the whole list of tasks)
-   - "task_1", "task_2", "task_3", "task_4", "task_5" (a specific task item)
-   - "image_background" or "artwork" (visual style, background art, scene)
-   - "full_draft" (if user asks to rewrite, summarize, or rework the whole post/draft, or provides general feedback about post quality/content)
+1. TARGET IDENTIFICATION (Choose the single best target):
+   - "project_title":
+     * Changing or adjusting the project name / title.
+     * CRITICAL: If the user says "название на фото", "заголовок на картинке/баннере/карточке", "поменяй название на фото на X", "название проекта сделай X", "на фото заголовок X" -> THIS IS "project_title"!
+     * image_operation MUST BE "rerender_text" (this updates both the Telegram post and re-renders the typography layer on the social card without generating a new AI background).
+   - "image_background":
+     * Feedback on the VISUAL ARTWORK, background image, scenery, character, aesthetics, or graphic theme (e.g. "сделай фон в стиле киберпанк", "убери девушку с фона", "сделай космический арт", "картинка не нравится, сделай неоновый ночной город", "сгенерируй новый фон").
+     * operation MUST BE "regenerate".
+     * new_value MUST BE the visual prompt/description for image generation.
+     * image_operation MUST BE "new_artwork".
+   - "artwork":
+     * Feedback changing the ACCENT COLOR THEME or palette of the card HUD (e.g. "сделай карточку фиолетовой", "смени цвет на синий/голубой/зеленый/лайм/золотой/красный/оранжевый", "поменяй тему на violet").
+     * operation MUST BE "restyle".
+     * new_value MUST BE the canonical color name: "cyan", "violet", "red", "gold", "orange", or "lime".
+     * image_operation MUST BE "local_edit".
+   - "potential_reward":
+     * Changing potential rewards / payout amount / token pool (e.g. "поставь $1000+", "награда 500$", "измени Potential Rewards с $2500+ на $1000+", "награду на фото сделай $500", "награда косарь").
+     * image_operation MUST BE "rerender_text".
+   - "network":
+     * Changing blockchain / ecosystem network (e.g. "сеть Solana", "смени чейн на Base", "сеть на фото сделай Arbitrum").
+     * image_operation MUST BE "rerender_text".
+   - "tasks":
+     * Changing the task list in bulk, adding a step, or shortening steps (e.g. "сделай шаги короче", "добавь задачу: Mint NFT", "замени все задачи").
+     * image_operation MUST BE "rerender_text".
+   - "task_1", "task_2", "task_3", "task_4", "task_5":
+     * Editing or removing a specific step (e.g. "замени второй пункт на: ...", "удали 3 шаг", "первый пункт сделай: ...").
+     * image_operation MUST BE "rerender_text".
+   - "description":
+     * Changing the project summary / introductory description text (e.g. "описание сделай в 2 предложения", "напиши понятнее про суть проекта", "сократи описание").
+     * image_operation MUST BE "none".
+   - "risk_note":
+     * Adding, updating, or removing risk disclaimers (e.g. "убери риски", "без блока рисков", "измени предупреждение о рисках").
+     * operation MUST BE "remove" (if deleting) or "replace" (if updating).
+     * image_operation MUST BE "none".
+   - "twitter":
+     * Modifying the Twitter / X post draft specifically (e.g. "перепиши твит", "твиттер сделай коротким").
+     * image_operation MUST BE "none".
+   - "full_draft":
+     * General editorial feedback on the overall post quality, tone, or readability (e.g. "перепиши пост", "сделай текст лаконичным и интересным", "слишком много текста, переделай нормально", "улучши пост для публикации").
+     * operation MUST BE "rewrite".
+     * image_operation MUST BE "rerender_text".
 
-2. Determine the operation:
-   - "replace", "replace_list", "rewrite", "add", "remove", "shorten", "regenerate", "restyle"
+2. TASK VALIDATION RULES (when target is tasks or task_N):
+   - Concise action statement <= 120 characters in natural English/Russian.
+   - NO ellipsis ("..." or "…").
+   - NO filler phrases ("etc.", "and more").
+   - NO embedded step numbering ("1.", "Step 1:").
+   - NO markdown bold/italic or emojis.
+   - Preserve factual onchain actions (bridge, swap, mint, stake, trade).
 
-3. CRITICAL TASK RULES when editing tasks:
-   - Each task MUST be a concise action statement <= 120 characters.
-   - NEVER use ellipsis ("..." or "…").
-   - NEVER use filler words ("etc.", "and more", "and so on").
-   - NO embedded numbering ("1.", "Step 1:").
-   - NO markdown formatting or emojis inside task strings.
-   - NEVER invent new fictional steps not implied by the user or source.
-   - If user asks to "shorten" or "сделай короче", preserve factual meaning while removing fluff.
-
-4. Image operation routing:
-   - If changing reward, tasks, title, network, category -> image_operation MUST BE "rerender_text" (NO new AI artwork).
-   - If changing background, character, art style -> image_operation MUST BE "new_artwork".
-   - If changing only twitter text, risk_note, or private links -> image_operation MUST BE "none".
+3. IMAGE OPERATION ROUTING:
+   - "rerender_text": Target affects typography on social card (project_title, potential_reward, network, tasks, full_draft). Overlays text on existing background. NO AI image generation.
+   - "new_artwork": User explicitly requested visual style, background, scenery, or character change. Triggers new AI image generation.
+   - "local_edit": Color theme change (cyan, violet, red, gold, orange, lime). Re-renders card HUD palette.
+   - "none": Target only affects Telegram text or private fields (description, twitter, risk_note).
 
 Respond ONLY with valid JSON:
 {
   "target": "<target>",
-  "operation": "<operation>",
+  "operation": "<replace|replace_list|rewrite|add|remove|shorten|regenerate|restyle>",
   "old_value": <current value or null>,
   "new_value": <new value or list of new values>,
-  "confidence": <float 0.0-1.0>,
-  "requires_confirmation": <true if major rewrite or removing tasks, else false>,
+  "confidence": <float between 0.7 and 1.0>,
+  "requires_confirmation": <true if deleting tasks or high risk change, else false>,
   "affected_components": ["draft_data", "telegram_post", "social_card"],
-  "image_operation": "rerender_text" | "new_artwork" | "none",
-  "explanation": "<short human explanation in Russian>"
+  "image_operation": "rerender_text" | "new_artwork" | "local_edit" | "none",
+  "explanation": "<concise explanation in Russian of what will change>"
 }"""
 
 
@@ -452,7 +478,7 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
 
 
 async def parse_intent_with_llm(command: str, current: DraftContent) -> EditPlan:
-    """Parse user command using Groq with Gemini fallback."""
+    """Parse user command using OpenRouter -> Groq -> Gemini cascade."""
     user_context = (
         f"CURRENT DRAFT STATE:\n"
         f"Title: {current.title}\n"
@@ -464,12 +490,13 @@ async def parse_intent_with_llm(command: str, current: DraftContent) -> EditPlan
         f"Risk Note: {current.risk_note or 'None'}\n"
         f"Twitter Draft: {current.twitter_text or 'None'}\n"
         f"Project Link: {current.project_link}\n"
-        f"Artwork Theme Color: {current.artwork.theme_color}\n\n"
-        f"USER COMMAND:\n{command}\n\n"
+        f"Artwork Theme Color: {current.artwork.theme_color}\n"
+        f"Artwork Prompt: {current.artwork.prompt}\n\n"
+        f"USER REMARK / COMMAND:\n{command}\n\n"
         "Return the structured JSON EditPlan:"
     )
 
-    # Try OpenRouter first
+    # 1. Try OpenRouter first (configured on Render / GitHub)
     if settings.OPENROUTER_API_KEY:
         try:
             from services.openrouter_client import generate_json as openrouter_json
@@ -480,11 +507,13 @@ async def parse_intent_with_llm(command: str, current: DraftContent) -> EditPlan
                 temperature=0.1,
             )
             data = json.loads(response_json)
-            return EditPlan.from_dict(data)
+            if isinstance(data, dict) and "target" in data and "operation" in data:
+                return EditPlan.from_dict(data)
+            logger.warning("OpenRouter intent parse returned non-plan JSON: %s", data)
         except Exception as exc:
             logger.warning("OpenRouter intent parse failed: %s; trying Groq fallback", exc)
 
-    # Try Groq second
+    # 2. Try Groq second
     if settings.GROQ_API_KEY:
         try:
             response_json = await generate_json(
@@ -494,11 +523,13 @@ async def parse_intent_with_llm(command: str, current: DraftContent) -> EditPlan
                 schema_name="draft_edit_plan",
             )
             data = json.loads(response_json)
-            return EditPlan.from_dict(data)
+            if isinstance(data, dict) and "target" in data and "operation" in data:
+                return EditPlan.from_dict(data)
+            logger.warning("Groq intent parse returned non-plan JSON: %s", data)
         except Exception as exc:
             logger.warning("Groq intent parse failed: %s; trying Gemini fallback", exc)
 
-    # Try Gemini fallback
+    # 3. Try Gemini fallback
     if settings.GEMINI_API_KEY:
         try:
             response = await generate_content(
@@ -511,11 +542,18 @@ async def parse_intent_with_llm(command: str, current: DraftContent) -> EditPlan
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0].strip()
             data = json.loads(text)
-            return EditPlan.from_dict(data)
+            if isinstance(data, dict) and "target" in data and "operation" in data:
+                return EditPlan.from_dict(data)
+            logger.warning("Gemini intent parse returned non-plan JSON: %s", data)
         except Exception as exc:
             logger.warning("Gemini intent parse failed: %s", exc)
 
-    # Fallback to general rework if LLM unavailable
+    # 4. Fallback to deterministic parser if LLM failed
+    fast = _fast_deterministic_parse(command, current)
+    if fast:
+        return fast
+
+    # 5. Fallback to general rework if LLM unavailable
     return EditPlan(
         target="full_draft",
         operation="rewrite",
@@ -810,14 +848,38 @@ class EditorService:
 
     @staticmethod
     async def create_edit_plan(command: str, current: DraftContent) -> EditPlan:
-        # 1. Try fast deterministic parser
+        """Parse user remark or command into a structured EditPlan.
+
+        Uses LLM-First Intent Routing when AI keys are available to deeply analyze
+        arbitrary natural language remarks, complaints, photo feedback, and questions.
+        Falls back to deterministic regex parsing in offline test environments or network failures.
+        """
+        has_llm = bool(settings.OPENROUTER_API_KEY or settings.GROQ_API_KEY or settings.GEMINI_API_KEY)
+        if has_llm:
+            try:
+                plan = await parse_intent_with_llm(command, current)
+                if plan and plan.confidence >= 0.7:
+                    return plan
+            except Exception as exc:
+                logger.warning("LLM intent routing failed: %s; falling back to deterministic parser", exc)
+
+        # Fast deterministic fallback (offline test mode / network failover)
         fast_plan = _fast_deterministic_parse(command, current)
         if fast_plan:
             return fast_plan
 
-        # 2. Use LLM Intent Parser
-        plan = await parse_intent_with_llm(command, current)
-        return plan
+        # Fallback to general draft rework
+        return EditPlan(
+            target="full_draft",
+            operation="rewrite",
+            old_value=None,
+            new_value=command,
+            confidence=0.6,
+            requires_confirmation=False,
+            affected_components=["draft_data", "telegram_post", "social_card"],
+            image_operation="rerender_text",
+            explanation=f"Переработка черновика по запросу: {command}",
+        )
 
     @staticmethod
     async def apply_edit_plan(
