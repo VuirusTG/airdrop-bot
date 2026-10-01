@@ -347,14 +347,18 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             explanation="Сокращение списка задач",
         )
 
-    # 6. Change title: "Измени заголовок на: Base Airdrop Season 2" / "Поменяй заголовок на фото на ..."
+    # 6. Change title: "Сделай название на фото 'Wager Predict'", "Поменяй название проекта на фото на Wager Predict", "Измени заголовок на: ..."
     m_title = re.search(
-        r"(?:измени|поменяй|смени|set|change)\s+(?:(?:на\s+)?(?:фото|картинке|карточке)\s+)?(?:заголовок|название|title)(?:\s+(?:на\s+)?(?:фото|картинке|карточке))?\s*на\s*[:\s]*(.+)",
+        r"(?:измени|поменяй|смени|сделай|поставь|укажи|напиши|задай|set|change|update)\s+"
+        r"(?:(?:на\s+)?(?:фото|картинке|карточке|баннере)\s+)?"
+        r"(?:заголовок|название(?:\s+проекта)?|имя(?:\s+проекта)?|title|project\s+name)"
+        r"(?:\s+(?:на\s+)?(?:фото|картинке|карточке|баннере))?"
+        r"(?:\s+(?:на|to|в))?\s*[:\s]*[\"']?([^\"'\n]+)[\"']?",
         cmd,
         re.IGNORECASE,
     )
     if m_title:
-        new_title = m_title.group(1).strip()
+        new_title = m_title.group(1).strip().strip('"\'')
         return EditPlan(
             target="project_title",
             operation="replace",
@@ -364,7 +368,7 @@ def _fast_deterministic_parse(command: str, current: DraftContent) -> EditPlan |
             requires_confirmation=False,
             affected_components=["draft_data", "telegram_post", "social_card"],
             image_operation="rerender_text",
-            explanation=f"Изменение заголовка на '{new_title}'",
+            explanation=f"Изменение названия проекта на '{new_title}'",
         )
 
     # 6b. Change description: "Измени описание на: ..." / "Поменяй описание ..." / "Сделай описание лаконичным"

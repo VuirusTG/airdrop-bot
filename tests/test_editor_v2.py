@@ -164,6 +164,54 @@ def test_task_sanitizer():
     assert "**" not in cleaned
 
 
+def test_fast_parse_title_on_photo_variations():
+    from services.image_rework import detect_theme_color, requests_text_rework
+
+    draft = get_sample_draft()
+    cmd1 = 'Сделай название на фото "Wager Predict"'
+    cmd2 = "Поменяй название проекта на фото на Wager Predict"
+    cmd3 = "Измени заголовок на фото на: Wager Predict"
+
+    # Theme color must NOT be triggered by "Predict" containing "red"
+    assert detect_theme_color(cmd1) is None
+    assert detect_theme_color(cmd2) is None
+    assert requests_text_rework(cmd1) is True
+    assert requests_text_rework(cmd2) is True
+
+    plan1 = _fast_deterministic_parse(cmd1, draft)
+    assert plan1 is not None
+    assert plan1.target == "project_title"
+    assert plan1.new_value == "Wager Predict"
+    assert plan1.image_operation == "rerender_text"
+
+    plan2 = _fast_deterministic_parse(cmd2, draft)
+    assert plan2 is not None
+    assert plan2.target == "project_title"
+    assert plan2.new_value == "Wager Predict"
+    assert plan2.image_operation == "rerender_text"
+
+    plan3 = _fast_deterministic_parse(cmd3, draft)
+    assert plan3 is not None
+    assert plan3.target == "project_title"
+    assert plan3.new_value == "Wager Predict"
+    assert plan3.image_operation == "rerender_text"
+
+
+def test_detect_theme_color_word_boundaries():
+    from services.image_rework import detect_theme_color
+
+    # Substring false positives must be rejected
+    assert detect_theme_color("Wager Predict") is None
+    assert detect_theme_color("Credit score on Base") is None
+    assert detect_theme_color("Shared liquidity pool") is None
+    assert detect_theme_color("Redirect user to portal") is None
+
+    # Real color commands must be accepted
+    assert detect_theme_color("Сделай фон красным") == "red"
+    assert detect_theme_color("Смени тему на синий") == "cyan"
+    assert detect_theme_color("Поставь цвет violet") == "violet"
+
+
 if __name__ == "__main__":
     test_fast_parse_reward_change()
     test_fast_parse_replace_single_task()
@@ -172,4 +220,6 @@ if __name__ == "__main__":
     test_fast_parse_new_artwork()
     test_task_validator_strict_rules()
     test_task_sanitizer()
+    test_fast_parse_title_on_photo_variations()
+    test_detect_theme_color_word_boundaries()
     print("ALL EDITOR V2 & TASK VALIDATOR TESTS PASSED!")

@@ -108,10 +108,30 @@ def _clean_step(step: str) -> str:
 def _format_step_lines(step: str) -> tuple[str, str]:
     cleaned = _clean_step(step).strip()
     words = cleaned.split()
-    if len(words) <= 3:
+    if not words:
+        return "", ""
+    if len(words) <= 3 and len(cleaned) <= 22:
         return " ".join(words).upper(), ""
-    mid = min(len(words) // 2 + 1, 3)
-    return " ".join(words[:mid]).upper(), " ".join(words[mid:6]).upper()
+    line1_words: list[str] = []
+    line2_words: list[str] = []
+    len1 = 0
+    len2 = 0
+    for w in words:
+        w_len = len(w) + (1 if line1_words else 0)
+        if len1 + w_len <= 22 and not line2_words:
+            line1_words.append(w)
+            len1 += w_len
+        else:
+            w2_len = len(w) + (1 if line2_words else 0)
+            if len2 + w2_len <= 25:
+                line2_words.append(w)
+                len2 += w2_len
+            else:
+                break
+    # Avoid trailing dangling prepositions/articles on line 2
+    if line2_words and line2_words[-1].lower() in {"the", "to", "for", "in", "on", "at", "a", "an", "and", "or", "of", "with"}:
+        line2_words.pop()
+    return " ".join(line1_words).upper(), " ".join(line2_words).upper()
 
 
 def _steps(instructions: str) -> list[tuple[str, str]]:

@@ -17,9 +17,9 @@ IMAGE_INTENT_RE = re.compile(
 
 TEXT_INTENT_RE = re.compile(
     r"(?:"
-    r"текст\w*|заголов\w*|шапк\w*|описан\w*|инструкц\w*|шаг\w*|пункт\w*|"
+    r"текст\w*|заголов\w*|назван\w*|имя|шапк\w*|описан\w*|инструкц\w*|шаг\w*|пункт\w*|"
     r"наград\w*|риск\w*|твиттер\w*|пост\w*|слов\w*|перефразир\w*|сократ\w*|добав\w*|убер\w*|"
-    r"text|title|summary|instruction\w*|step\w*|reward|risk|twitter|tweet|wording|rewrite|shorten"
+    r"text|title|name|summary|instruction\w*|step\w*|reward|risk|twitter|tweet|wording|rewrite|shorten"
     r")",
     re.IGNORECASE,
 )
@@ -51,19 +51,21 @@ def classify_rework_intent(feedback: str | None) -> str:
 
 
 def detect_theme_color(feedback: str | None) -> str | None:
-    """Extract requested color theme if present in feedback."""
-    fb = (feedback or "").lower()
-    if any(w in fb for w in ["син", "голуб", "blue", "cyan", "лазур", "azure"]):
+    """Extract requested color theme if present in feedback using strict word boundaries."""
+    if not feedback:
+        return None
+    fb = feedback.lower()
+    if re.search(r"\b(?:син\w*|голуб\w*|blue|cyan|лазур\w*|azure)\b", fb):
         return "cyan"
-    if any(w in fb for w in ["фиолетов", "пурпур", "purple", "violet", "magenta"]):
+    if re.search(r"\b(?:фиолетов\w*|пурпур\w*|purple|violet|magenta)\b", fb):
         return "violet"
-    if any(w in fb for w in ["красн", "red", "crimson", "алый"]):
+    if re.search(r"\b(?:красн\w*|red|crimson|ал(?:ый|ая|ое|ые|ых))\b", fb):
         return "red"
-    if any(w in fb for w in ["желт", "золот", "gold", "yellow", "янтарь", "amber"]):
+    if re.search(r"\b(?:желт\w*|золот\w*|gold|yellow|янтарь|янтарн\w*|amber)\b", fb):
         return "gold"
-    if any(w in fb for w in ["оранж", "orange"]):
+    if re.search(r"\b(?:оранж\w*|orange)\b", fb):
         return "orange"
-    if any(w in fb for w in ["зелен", "лайм", "lime", "green"]):
+    if re.search(r"\b(?:зелен\w*|лайм\w*|lime|green)\b", fb):
         return "lime"
     return None
 

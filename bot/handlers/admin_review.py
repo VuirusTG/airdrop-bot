@@ -1288,7 +1288,7 @@ async def _execute_and_apply_plan(
 
     # Handle image operations according to level
     requested_color = detect_theme_color(user_command)
-    if requested_color:
+    if requested_color and (plan.target in ("artwork", "image_background", "theme", "card_background") or re.search(r"цвет\w*|палитр\w*|тем[аеуы]|колор|theme|color", user_command, re.IGNORECASE)):
         updated_content.artwork.theme_color = requested_color
 
     if plan.image_operation in ("generate_artwork", "new_artwork"):
