@@ -5,13 +5,14 @@ from aiogram import Bot, Dispatcher
 
 from config import settings
 from db.database import init_db
-from bot.handlers import admin_review
+from bot.handlers import admin_review, series_review
 from ingestion.scheduler import source_scanner
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=settings.BOT_TOKEN)
 dp = Dispatcher()
+dp.include_router(series_review.router)
 dp.include_router(admin_review.router)
 
 

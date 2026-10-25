@@ -72,12 +72,19 @@ class EditPlan:
     affected_components: list[str] = field(default_factory=lambda: ["draft_data", "telegram_post", "social_card"])
     image_operation: str = "rerender_text"  # none | rerender_text | local_edit | new_artwork
     explanation: str = ""
+    scope: str = "draft"  # draft | series | post | field
+    position: int | None = None  # 1-indexed position when scope == "post"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EditPlan:
+        pos_raw = data.get("position")
+        try:
+            pos_val = int(pos_raw) if pos_raw is not None else None
+        except (ValueError, TypeError):
+            pos_val = None
         return cls(
             target=str(data.get("target", "full_draft")),
             operation=str(data.get("operation", "replace")),
@@ -88,6 +95,8 @@ class EditPlan:
             affected_components=list(data.get("affected_components") or ["draft_data"]),
             image_operation=str(data.get("image_operation", "rerender_text")),
             explanation=str(data.get("explanation", "")),
+            scope=str(data.get("scope", "draft")),
+            position=pos_val,
         )
 
     def to_json(self) -> str:

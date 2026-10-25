@@ -52,6 +52,29 @@ async def _ensure_optional_columns(conn) -> None:
         "projects",
         {"filter_version": "INTEGER DEFAULT 1", "project_url": "TEXT"},
     )
+    await _ensure_columns(
+        conn,
+        "content_series",
+        {
+            "visual_strategy": "VARCHAR(32) DEFAULT 'single_cover'",
+            "published_at": "TIMESTAMP WITH TIME ZONE",
+            "current_version": "INTEGER DEFAULT 1",
+        },
+    )
+    await _ensure_columns(
+        conn,
+        "content_series_posts",
+        {
+            "content_json": "TEXT",
+            "media_required": "BOOLEAN DEFAULT FALSE",
+            "media_type": "VARCHAR(32)",
+            "media_path": "VARCHAR(512)",
+            "telegram_message_id": "INTEGER",
+            "x_post_id": "VARCHAR(255)",
+            "reply_to_x_post_id": "VARCHAR(255)",
+            "error": "TEXT",
+        },
+    )
     def check_draft_snapshots_action(sync_conn):
         insp = inspect(sync_conn)
         if not insp.has_table("draft_snapshots"):

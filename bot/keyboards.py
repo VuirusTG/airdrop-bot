@@ -42,6 +42,16 @@ def review_keyboard(
                 callback_data=f"regen_image:{project_id}",
             ),
         ],
+        [
+            InlineKeyboardButton(
+                text="🧵 Создать тред",
+                callback_data=f"series_init:{project_id}:x_thread",
+            ),
+            InlineKeyboardButton(
+                text="📚 Создать серию",
+                callback_data=f"series_init:{project_id}:series",
+            ),
+        ],
     ]
     if can_undo:
         rows.append([
@@ -218,4 +228,136 @@ def archive_keyboard(has_deleted: bool = False) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📋 К очереди проверки", callback_data="archive_to_review"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def series_creation_keyboard(project_id: int, format_type: str) -> InlineKeyboardMarkup:
+    """Keyboard for selecting number of posts when creating a series."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="3 поста",
+                    callback_data=f"series_gen:{project_id}:{format_type}:3",
+                ),
+                InlineKeyboardButton(
+                    text="5 постов (стандарт)",
+                    callback_data=f"series_gen:{project_id}:{format_type}:5",
+                ),
+                InlineKeyboardButton(
+                    text="7 постов (детально)",
+                    callback_data=f"series_gen:{project_id}:{format_type}:7",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"series_cancel_init:{project_id}",
+                ),
+            ],
+        ]
+    )
+
+
+def series_card_keyboard(
+    series_id: int,
+    position: int,
+    total: int,
+    can_undo: bool = False,
+    can_redo: bool = False,
+) -> InlineKeyboardMarkup:
+    """Card keyboard with single-post pagination, editing, regeneration and publishing."""
+    prev_cb = f"series_nav:{series_id}:{position - 1}" if position > 1 else f"series_edge:first"
+    next_cb = f"series_nav:{series_id}:{position + 1}" if position < total else f"series_edge:last"
+
+    rows = [
+        # Navigation row
+        [
+            InlineKeyboardButton(text="◀️ Пред", callback_data=prev_cb),
+            InlineKeyboardButton(text=f"📌 {position}/{total}", callback_data=f"series_info:{series_id}:{position}"),
+            InlineKeyboardButton(text="След ▶️", callback_data=next_cb),
+        ],
+        # Edit & Regen post
+        [
+            InlineKeyboardButton(
+                text="✏️ Редактировать пост",
+                callback_data=f"series_edit_post:{series_id}:{position}",
+            ),
+            InlineKeyboardButton(
+                text="🔄 Перегенерировать пост",
+                callback_data=f"series_regen_post:{series_id}:{position}",
+            ),
+        ],
+        # Delete & Add post
+        [
+            InlineKeyboardButton(
+                text="🗑 Удалить пост",
+                callback_data=f"series_del_post:{series_id}:{position}",
+            ),
+            InlineKeyboardButton(
+                text="➕ Добавить пост",
+                callback_data=f"series_add_post:{series_id}:{position}",
+            ),
+        ],
+        # Full preview
+        [
+            InlineKeyboardButton(
+                text="👁 Полный предпросмотр всей серии",
+                callback_data=f"series_full_preview:{series_id}:{position}",
+            ),
+        ],
+    ]
+
+    # Undo / Redo row
+    undo_redo_row = []
+    if can_undo:
+        undo_redo_row.append(
+            InlineKeyboardButton(text="↩️ Undo", callback_data=f"series_undo:{series_id}:{position}")
+        )
+    if can_redo:
+        undo_redo_row.append(
+            InlineKeyboardButton(text="🔁 Redo", callback_data=f"series_redo:{series_id}:{position}")
+        )
+    if undo_redo_row:
+        rows.append(undo_redo_row)
+
+    # Save draft & Publish / Cancel
+    rows.append([
+        InlineKeyboardButton(
+            text="💾 Сохранить черновик",
+            callback_data=f"series_save_draft:{series_id}",
+        ),
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text="🚀 Опубликовать всю серию",
+            callback_data=f"series_publish:{series_id}",
+        ),
+        InlineKeyboardButton(
+            text="❌ Закрыть",
+            callback_data=f"series_close:{series_id}",
+        ),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def series_preview_keyboard(series_id: int, return_position: int = 1) -> InlineKeyboardMarkup:
+    """Keyboard for viewing full series preview."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="◀️ К пошаговому просмотру",
+                    callback_data=f"series_nav:{series_id}:{return_position}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚀 Опубликовать всю серию",
+                    callback_data=f"series_publish:{series_id}",
+                ),
+            ],
+        ]
+    )
+
 

@@ -195,3 +195,94 @@ class WebSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class SeriesStatus:
+    DRAFT = "draft"
+    APPROVED = "approved"
+    PUBLISHING = "publishing"
+    PARTIALLY_PUBLISHED = "partially_published"
+    PUBLISHED = "published"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class PostStatus:
+    PENDING = "pending"
+    PUBLISHING = "publishing"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
+class ContentSeries(Base):
+    """Represents a multi-post content series or X/Twitter thread."""
+
+    __tablename__ = "content_series"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), index=True, nullable=True)
+    source_draft_id: Mapped[int | None] = mapped_column(ForeignKey("drafts.id"), index=True, nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    topic: Mapped[str] = mapped_column(Text, default="")
+    format: Mapped[str] = mapped_column(String(32), default="x_thread")  # series | x_thread | multi_platform
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft | approved | publishing | partially_published | published | failed | cancelled
+    total_posts: Mapped[int] = mapped_column(Integer, default=5)
+    current_version: Mapped[int] = mapped_column(Integer, default=1)
+    plan_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    visual_strategy: Mapped[str] = mapped_column(String(32), default="single_cover")  # none | single_cover | selected_posts | every_post
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    posts: Mapped[list["SeriesPost"]] = relationship(
+        back_populates="series", order_by="SeriesPost.position", cascade="all, delete-orphan", lazy="selectin"
+    )
+    snapshots: Mapped[list["SeriesSnapshot"]] = relationship(
+        back_populates="series", order_by="SeriesSnapshot.version", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class SeriesPost(Base):
+    """An individual post/tweet belonging to a ContentSeries."""
+
+    __tablename__ = "content_series_posts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    series_id: Mapped[int] = mapped_column(ForeignKey("content_series.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer, index=True)  # 1-indexed (1, 2, 3...)
+    purpose: Mapped[str] = mapped_column(String(64), default="content")
+    content: Mapped[str] = mapped_column(Text)
+    content_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)  # pending | published | failed
+    media_required: Mapped[bool] = mapped_column(default=False)
+    media_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    media_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    x_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reply_to_x_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    series: Mapped["ContentSeries"] = relationship(back_populates="posts")
+
+
+class SeriesSnapshot(Base):
+    """Immutable version snapshot of a ContentSeries for Undo/Redo."""
+
+    __tablename__ = "series_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    series_id: Mapped[int] = mapped_column(ForeignKey("content_series.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    action: Mapped[str] = mapped_column(String(255))
+    user_command: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    series: Mapped["ContentSeries"] = relationship(back_populates="snapshots")
+

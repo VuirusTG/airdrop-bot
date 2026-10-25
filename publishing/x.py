@@ -123,8 +123,14 @@ def _upload_image(image_path: str) -> str:
     return media_id
 
 
-def _publish_sync(text: str, image_path: str | None = None) -> tuple[str, str]:
+def _publish_sync(
+    text: str,
+    image_path: str | None = None,
+    reply_to_tweet_id: str | None = None,
+) -> tuple[str, str]:
     payload: dict = {"text": text}
+    if reply_to_tweet_id:
+        payload["reply"] = {"in_reply_to_tweet_id": str(reply_to_tweet_id)}
     if image_path:
         payload["media"] = {"media_ids": [_upload_image(image_path)]}
     try:
@@ -152,7 +158,11 @@ def _publish_sync(text: str, image_path: str | None = None) -> tuple[str, str]:
     return post_id, f"https://x.com/i/web/status/{post_id}"
 
 
-async def publish_to_x(text: str, image_path: str | None = None) -> tuple[str, str]:
+async def publish_to_x(
+    text: str,
+    image_path: str | None = None,
+    reply_to_tweet_id: str | None = None,
+) -> tuple[str, str]:
     if not settings.X_AUTO_PUBLISH:
         raise XPublishError("Автопубликация в X отключена настройкой X_AUTO_PUBLISH.")
     if not _credentials_ready():
@@ -163,7 +173,7 @@ async def publish_to_x(text: str, image_path: str | None = None) -> tuple[str, s
         raise XPublishError("Черновик для X пуст.")
     if len(text) > 280:
         raise XPublishError(f"Черновик для X длиннее 280 символов ({len(text)}).")
-    return await asyncio.to_thread(_publish_sync, text, image_path)
+    return await asyncio.to_thread(_publish_sync, text, image_path, reply_to_tweet_id)
 
 
 def _check_connection_sync() -> tuple[bool, str]:
